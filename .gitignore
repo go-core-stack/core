@@ -1,0 +1,13 @@
+# Temporary files when a file is opened with VIM
+*.swo
+*.swp
+
+# Temporary files for mac
+.DS_Store
+
+# VS code files and folders
+.vscode
+__debug_bin
+
+# ignore if any diff present in the repo
+*.dif
