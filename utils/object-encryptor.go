@@ -1,4 +1,6 @@
+// Copyright © 2025 Prabhjot Singh Sethi, All Rights reserved
 // Author: Prabhjot Singh Sethi <prabhjot.sethi@gmail.com>
+
 // Initial reference and motivation taken from
 // https://gitlab.com/project-emco/core/emco-base/-/blob/main/src/orchestrator/pkg/infra/utils/objectencryptor.go
 
@@ -8,17 +10,19 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/hex"
-	"log"
-	"os"
 	"reflect"
-	"strings"
+	"sync"
+
+	"github.com/Prabhjot-Sethi/core/errors"
 )
 
-// IObjectEncryptor is responsible for encrypting and decrypting objects
+var nonce = []byte("core nonce")
+
+// IOEncryptor is responsible for encrypting and decrypting objects
 // while transacting with an IO ensuring capability of handling secret
 // fields available as part of the data. while avoiding heavy usage of
 // Vaults and HSM for High Transaction interfaces
-type IObjectEncryptor interface {
+type IOEncryptor interface {
 	// Encrypt a given object
 	EncryptObject(o interface{}) (interface{}, error)
 
@@ -32,32 +36,61 @@ type IObjectEncryptor interface {
 	DecryptString(ciphermessage string) (string, error)
 }
 
-type myObjectEncryptor struct {
+// encrpytor implementation
+type encryptorImpl struct {
 	gcm   cipher.AEAD
 	nonce []byte
 }
 
-var gobjencs = make(map[string]IObjectEncryptor)
+// map to hold encryptors for different providers
+var encryptors = make(map[string]IOEncryptor)
 
-func GetObjectEncryptor(provider string) IObjectEncryptor {
-	if gobjencs[provider] == nil {
-		envkey := strings.ToUpper(provider) + "_DATA_KEY"
-		if len(os.Getenv(envkey)) > 0 {
-			oe, err := createObjectEncryptor([]byte(os.Getenv(envkey)), []byte("emco nonce"))
-			if err != nil {
-				log.Println("Create Object Encryptor error :: ", err)
-				return nil
-			}
-			gobjencs[provider] = oe
-		} else {
-			return nil
-		}
+// Read Write mutex to access the above map, as we may have multiple
+// go routines working together to access this library, ensuring
+// thread safety
+var encsLock sync.RWMutex
+
+func GetObjectEncryptor(provider string) (IOEncryptor, error) {
+	encsLock.RLock()
+	defer encsLock.RUnlock()
+
+	enc, ok := encryptors[provider]
+	if !ok {
+		err := errors.Wrap(errors.NotFound, "Encryptor not found")
+		return nil, err
 	}
 
-	return gobjencs[provider]
+	return enc, nil
 }
 
-func createObjectEncryptor(key []byte, nonce []byte) (IObjectEncryptor, error) {
+// InitializeEncryptor initialize a new Encryptor for given
+// provider, this will return an error if encryptor already
+// exists
+func InitializeEncryptor(provider, key string) (IOEncryptor, error) {
+	// ensure taking a write lock before processing this further
+	// to ensure thread safety along with appropriate error
+	// handling
+	encsLock.Lock()
+	defer encsLock.Unlock()
+	enc := encryptors[provider]
+	if enc != nil {
+		return nil, errors.Wrap(errors.AlreadyExists, "Encryptor Already exists")
+	}
+
+	if len(key) <= 0 {
+		return nil, errors.Wrap(errors.InvalidArgument, "Invalid Key length")
+	}
+
+	oe, err := createEncryptor([]byte(key))
+	if err != nil {
+		return nil, errors.Wrap(errors.Unknown, "Create Object Encryptor error : "+err.Error())
+	}
+	encryptors[provider] = oe
+
+	return oe, nil
+}
+
+func createEncryptor(key []byte) (IOEncryptor, error) {
 	// Format key and nonce
 	nkey := make([]byte, 32)
 	nnonce := make([]byte, 12)
@@ -87,23 +120,23 @@ func createObjectEncryptor(key []byte, nonce []byte) (IObjectEncryptor, error) {
 		return nil, err
 	}
 
-	return &myObjectEncryptor{aesgcm, nnonce}, nil
+	return &encryptorImpl{aesgcm, nnonce}, nil
 }
 
-func (c *myObjectEncryptor) EncryptObject(o interface{}) (interface{}, error) {
+func (c *encryptorImpl) EncryptObject(o interface{}) (interface{}, error) {
 	return c.processObject(o, false, c.EncryptString)
 }
 
-func (c *myObjectEncryptor) DecryptObject(o interface{}) (interface{}, error) {
+func (c *encryptorImpl) DecryptObject(o interface{}) (interface{}, error) {
 	return c.processObject(o, false, c.DecryptString)
 }
 
-func (c *myObjectEncryptor) EncryptString(message string) (string, error) {
+func (c *encryptorImpl) EncryptString(message string) (string, error) {
 	ciphermessage := c.gcm.Seal(nil, c.nonce, []byte(message), nil)
 	return hex.EncodeToString(ciphermessage), nil
 }
 
-func (c *myObjectEncryptor) DecryptString(ciphermessage string) (string, error) {
+func (c *encryptorImpl) DecryptString(ciphermessage string) (string, error) {
 	cm, err := hex.DecodeString(ciphermessage)
 	if err != nil {
 		return "", err
@@ -118,7 +151,7 @@ func (c *myObjectEncryptor) DecryptString(ciphermessage string) (string, error) 
 	return string(message), nil
 }
 
-func (c *myObjectEncryptor) processObject(o interface{}, encrypt bool, oper func(string) (string, error)) (interface{}, error) {
+func (c *encryptorImpl) processObject(o interface{}, encrypt bool, oper func(string) (string, error)) (interface{}, error) {
 	t := reflect.TypeOf(o)
 	switch t.Kind() {
 	case reflect.String:
