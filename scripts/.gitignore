@@ -1,0 +1,3 @@
+# generated key file, for mongodb auth
+# avoid pushing to repo
+mongod_key
