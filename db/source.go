@@ -39,7 +39,7 @@ func SetSourceIdentifier(identifier string) bool {
 }
 
 // for internal use only, it will also make source identifier in use
-func getSourceIdentifier() string {
+func GetSourceIdentifier() string {
 	sourceIdentifierLock.RLock()
 	defer sourceIdentifierLock.RUnlock()
 	sourceIdentifierUsed = true

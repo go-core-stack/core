@@ -17,3 +17,6 @@ rm -rf ${GOLANG_PACKAGE}
 echo "export GOPATH=\$HOME/go" >> ~/.bashrc
 echo "export PATH=\$PATH:/usr/local/go/bin:\$HOME/go/bin" >> ~/.bashrc
 source ~/.bashrc
+
+# install golang lint cli
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.0.2
