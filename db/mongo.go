@@ -42,7 +42,7 @@ func (c *MongoConfig) validate() error {
 	if c.Port == "" || c.Port == "0" {
 		c.Port = "27017"
 	} else {
-		if _, err := strconv.Atoi(c.Port); err == nil {
+		if _, err := strconv.Atoi(c.Port); err != nil {
 			return errors.Wrap(errors.InvalidArgument, "invalid database port")
 		}
 	}
@@ -61,7 +61,7 @@ func NewMongoClient(conf *MongoConfig) (StoreClient, error) {
 	clientOptions.ApplyURI(uri)
 	clientOptions.SetAuth(options.Credential{
 		AuthMechanism: "SCRAM-SHA-256",
-		AuthSource:    getSourceIdentifier(),
+		AuthSource:    "admin", //getSourceIdentifier(),
 		Username:      conf.Username,
 		Password:      conf.Password,
 	})
@@ -93,4 +93,8 @@ func (c *mongoClient) GetDataStore(dbName string) Store {
 	//go mongoStore.ReadRefSchema(ctx)
 
 	return mongoStore
+}
+
+func (c *mongoClient) HealthCheck(ctx context.Context) error {
+	return c.client.Ping(ctx, nil)
 }

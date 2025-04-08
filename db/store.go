@@ -6,10 +6,20 @@
 
 package db
 
+import (
+	"context"
+)
+
 type Store interface {
 }
 
 type StoreClient interface {
 	// Get the Data Store interface given the client interface
 	GetDataStore(dbName string) Store
+
+	// Health Check, if the Store is connectable and healthy
+	// returns the status of health of the server by means of
+	// error if error is nil the health of the DB store can be
+	// considered healthy
+	HealthCheck(ctx context.Context) error
 }
