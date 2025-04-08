@@ -5,8 +5,10 @@ ROOT_DIR:=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 .PHONY: all
 
-all: go-format go-vet setup-mongodb-env
+all: go-format go-vet go-lint setup-mongodb-env
 
+test: go-format go-vet go-lint
+	go test -v ./...
 setup-mongodb-env:
 	${ROOT_DIR}/scripts/mongodb/run-mongodb-dev.sh
 	${ROOT_DIR}/scripts/mongodb/run-mongoexpress.sh
@@ -19,3 +21,6 @@ go-format:
 
 go-vet:
 	go vet ./...
+
+go-lint:
+	golangci-lint run
