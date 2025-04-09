@@ -12,8 +12,13 @@ type MyKey struct {
 	Name string
 }
 
+type InternaData struct {
+	Test string
+}
+
 type MyData struct {
 	Desc string
+	Val  *InternaData
 }
 
 func Test_ClientConnection(t *testing.T) {
@@ -46,10 +51,33 @@ func Test_ClientConnection(t *testing.T) {
 		}
 		data := &MyData{
 			Desc: "sample-description",
+			Val: &InternaData{
+				Test: "abc",
+			},
 		}
+
 		err = col.InsertOne(context.Background(), key, data)
 		if err != nil {
 			t.Errorf("failed to insert an entry to collection Error: %s", err)
+		}
+
+		val := &MyData{}
+		err = col.FindOne(context.Background(), key, val)
+		if err != nil {
+			t.Errorf("failed to find the entry Error: %s", err)
+		}
+
+		data.Desc = "new description"
+		data.Val.Test = "xyz"
+		err = col.UpdateOne(context.Background(), key, data, false)
+		if err != nil {
+			t.Errorf("failed to update an entry to collection Error: %s", err)
+		}
+
+		val = &MyData{}
+		err = col.FindOne(context.Background(), key, val)
+		if err != nil {
+			t.Errorf("failed to find the entry Error: %s", err)
 		}
 
 		err = col.DeleteOne(context.Background(), key)
@@ -60,6 +88,16 @@ func Test_ClientConnection(t *testing.T) {
 		err = col.DeleteOne(context.Background(), key)
 		if err == nil {
 			t.Errorf("attemptting delete on already deleted entry, but didn't receive expected error")
+		}
+
+		err = col.UpdateOne(context.Background(), key, data, true)
+		if err != nil {
+			t.Errorf("failed to update an entry to collection Error: %s", err)
+		}
+
+		err = col.DeleteOne(context.Background(), key)
+		if err != nil {
+			t.Errorf("failed to delete entry using key Error: %s", err)
 		}
 	})
 
