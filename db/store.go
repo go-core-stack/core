@@ -15,6 +15,19 @@ type StoreCollection interface {
 	// insert one entry to the collection for the given key and data
 	InsertOne(ctx context.Context, key interface{}, data interface{}) error
 
+	// update one entry in the collection for the given key and data
+	// if upsert flag is set, it would insert an entry if it doesn't
+	// exist while updating
+	UpdateOne(ctx context.Context, key interface{}, data interface{}, upsert bool) error
+
+	// Find one entry from the store collection for the given key, where the data
+	// value is returned based on the object type passed to it
+	FindOne(ctx context.Context, key interface{}, data interface{}) error
+
+	// Find multiple entries from the store collection for the given filter, where the data
+	// value is returned as a list based on the object type passed to it
+	FindMany(ctx context.Context, filter interface{}, data interface{}) error
+
 	// remove one entry from the collection matching the given key
 	DeleteOne(ctx context.Context, key interface{}) error
 }

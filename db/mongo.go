@@ -72,6 +72,66 @@ func (c *mongoCollection) InsertOne(ctx context.Context, key interface{}, data i
 	return nil
 }
 
+// inserts or updates one entry with given key and data to the collection
+// acts based on the flag passed for upsert
+// returns errors if entry not found while upsert flag is false or if
+// there is a connection error with the database server
+func (c *mongoCollection) UpdateOne(ctx context.Context, key interface{}, data interface{}, upsert bool) error {
+	if data == nil {
+		return errors.Wrap(errors.InvalidArgument, "db Insert error: No data to store")
+	}
+	if key == nil {
+		return errors.Wrap(errors.InvalidArgument, "db Insert error: No Key specified to store")
+	}
+
+	opts := options.Update().SetUpsert(upsert)
+	resp, err := c.col.UpdateOne(
+		ctx,
+		bson.M{"_id": key},
+		bson.D{
+			{Key: "$set", Value: data},
+		},
+		opts)
+
+	if err != nil {
+		return err
+	}
+
+	// check there should be at least one entry in matched count
+	// or upserted count to not return an error here
+	if resp.MatchedCount != 0 && resp.UpsertedCount != 0 {
+		return errors.Wrap(errors.NotFound, "No Document found")
+	}
+
+	return nil
+}
+
+// Find one entry from the store collection for the given key, where the data
+// value is returned based on the object type passed to it
+func (c *mongoCollection) FindOne(ctx context.Context, key interface{}, data interface{}) error {
+	resp := c.col.FindOne(ctx, bson.M{"_id": key})
+	// decode the value returned by the mongodb client into the data
+	// object passed by the caller
+	if err := resp.Decode(data); err != nil {
+		// TODO(prabhjot) might have to identify not found error
+		return err
+	}
+	return nil
+}
+
+// Find multiple entries from the store collection for the given filter, where the data
+// value is returned as a list based on the object type passed to it
+func (c *mongoCollection) FindMany(ctx context.Context, filter interface{}, data interface{}) error {
+	cursor, err := c.col.Find(ctx, filter)
+	if err != nil {
+		return err
+	}
+	if err = cursor.All(ctx, data); err != nil {
+		return err
+	}
+	return nil
+}
+
 // remove one entry from the collection matching the given key
 func (c *mongoCollection) DeleteOne(ctx context.Context, key interface{}) error {
 	resp, err := c.col.DeleteOne(ctx, bson.M{"_id": key})
