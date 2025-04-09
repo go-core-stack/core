@@ -8,6 +8,14 @@ import (
 	"testing"
 )
 
+type MyKey struct {
+	Name string
+}
+
+type MyData struct {
+	Desc string
+}
+
 func Test_ClientConnection(t *testing.T) {
 	t.Run("Valid_Auth_Config", func(t *testing.T) {
 		config := &MongoConfig{
@@ -29,7 +37,30 @@ func Test_ClientConnection(t *testing.T) {
 			t.Errorf("failed to perform Health check with DB Error: %s", err)
 		}
 
-		_ = client.GetDataStore("test")
+		s := client.GetDataStore("test")
+
+		col := s.GetCollection("collection1")
+
+		key := &MyKey{
+			Name: "test-key",
+		}
+		data := &MyData{
+			Desc: "sample-description",
+		}
+		err = col.InsertOne(context.Background(), key, data)
+		if err != nil {
+			t.Errorf("failed to insert an entry to collection Error: %s", err)
+		}
+
+		err = col.DeleteOne(context.Background(), key)
+		if err != nil {
+			t.Errorf("failed to delete entry using key Error: %s", err)
+		}
+
+		err = col.DeleteOne(context.Background(), key)
+		if err == nil {
+			t.Errorf("attemptting delete on already deleted entry, but didn't receive expected error")
+		}
 	})
 
 	t.Run("InValid_Port", func(t *testing.T) {
