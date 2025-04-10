@@ -9,3 +9,14 @@ package db
 const (
 	defaultSourceIdentifier = "MongoClientCore"
 )
+
+const (
+	// Operation string for mongo add/insert operation
+	MongoAddOp = "insert"
+
+	// Operation string for mongo update operation
+	MongoUpdateOp = "update"
+
+	// Operation string for mongo delete operation
+	MongoDeleteOp = "delete"
+)
