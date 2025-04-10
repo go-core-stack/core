@@ -8,7 +8,9 @@ package db
 
 import (
 	"context"
+	"log"
 	"net"
+	"reflect"
 	"strconv"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -24,6 +26,23 @@ type mongoCollection struct {
 	parent  *mongoStore // handler for the parent mongo DB object
 	colName string      // name of the collection this collection object is working with
 	col     *mongo.Collection
+	keyType reflect.Type
+}
+
+// Set KeyType for the collection, this is not mandatory
+// while the key type will be used by the interface implementer
+// mainly for Watch Callback for providing decoded key, if not
+// set watch will be working with the default decoders of
+// interface implementer
+// only pointer key type is supported as of now
+// returns error if the key type is not a pointer
+func (c *mongoCollection) SetKeyType(keyType reflect.Type) error {
+	if keyType.Kind() != reflect.Ptr {
+		// return error, as only pointer key type is supported
+		return errors.Wrap(errors.InvalidArgument, "key type is not a pointer")
+	}
+	c.keyType = keyType
+	return nil
 }
 
 // inserts one entry with given key and data to the collection
@@ -143,6 +162,84 @@ func (c *mongoCollection) DeleteOne(ctx context.Context, key interface{}) error 
 	if resp.DeletedCount == 0 {
 		return errors.Wrap(errors.NotFound, "No Document found")
 	}
+
+	return nil
+}
+
+// watch allows getting notified whenever a change happens to a document
+// in the collection
+func (c *mongoCollection) Watch(ctx context.Context, cb WatchCallbackfn) error {
+	// start watching on the collection with passed context
+	stream, err := c.col.Watch(ctx, mongo.Pipeline{})
+	if err != nil {
+		return err
+	}
+
+	// run the loop on stream in a separate go routine
+	// allowing the watch starter to resume control and work with
+	// managing Watch stream by virtue of passed context
+	go func() {
+		// take a snapshot of keyTpe for processing watch
+		keyType := c.keyType
+		// ensure closing of the open stream in case of returning from here
+		// keeping the handles and stack clean
+		// Note: this may not be required, if loop doesn't require it
+		// but still it is safe to keep ensuring appropriate cleanup
+		defer stream.Close(context.Background())
+		defer func() {
+			if !errors.Is(ctx.Err(), context.Canceled) {
+				// panic if the return from this function is not
+				// due to context being canceled
+				log.Panicf("End of stream observed due to error %s", stream.Err())
+			}
+		}()
+		for stream.Next(ctx) {
+			var data bson.M
+			if err := stream.Decode(&data); err != nil {
+				log.Printf("Closing watch due to decoding error %s", err)
+				return
+			}
+
+			op, ok := data["operationType"].(string)
+			if !ok {
+				log.Printf("Closing watch due to error, unable to find decode operation type ")
+				return
+			}
+
+			dk, ok := data["documentKey"].(bson.M)
+			if !ok {
+				log.Printf("Closing watch due to error, unable to find key")
+				return
+			}
+
+			bKey, ok := dk["_id"].(bson.M)
+			if !ok {
+				log.Printf("Closing watch due to error, unable to find id")
+				return
+			}
+
+			// key that will be shared with callback function
+			var key interface{}
+			if keyType != nil {
+				key = reflect.New(keyType.Elem()).Interface()
+			} else {
+				key = bson.D{}
+			}
+
+			marshaledData, err := bson.Marshal(bKey)
+			if err != nil {
+				log.Printf("Closing watch due to error, while bson Marshal : %q", err)
+				return
+			}
+
+			err = bson.Unmarshal(marshaledData, key)
+			if err != nil {
+				log.Printf("Closing watch due to error, while bson Unmarshal to key : %q", err)
+				return
+			}
+			cb(op, key)
+		}
+	}()
 
 	return nil
 }

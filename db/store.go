@@ -8,10 +8,23 @@ package db
 
 import (
 	"context"
+	"reflect"
 )
+
+// WatchCallbackfn responsible for
+type WatchCallbackfn func(op string, key interface{})
 
 // interface definition for a collection in store
 type StoreCollection interface {
+	// Set KeyType for the collection, this is not mandatory
+	// while the key type will be used by the interface implementer
+	// mainly for Watch Callback for providing decoded key, if not
+	// set watch will be working with the default decoders of
+	// interface implementer
+	// only pointer key type is supported as of now
+	// returns error if the key type is not a pointer
+	SetKeyType(keyType reflect.Type) error
+
 	// insert one entry to the collection for the given key and data
 	InsertOne(ctx context.Context, key interface{}, data interface{}) error
 
@@ -30,6 +43,10 @@ type StoreCollection interface {
 
 	// remove one entry from the collection matching the given key
 	DeleteOne(ctx context.Context, key interface{}) error
+
+	// watch allows getting notified whenever a change happens to a document
+	// in the collection
+	Watch(ctx context.Context, cb WatchCallbackfn) error
 }
 
 // interface definition for a store, responsible for holding group

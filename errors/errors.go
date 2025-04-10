@@ -3,6 +3,14 @@
 
 package errors
 
+import (
+	base "errors"
+)
+
+func Is(err error, target error) bool {
+	return base.Is(err, target)
+}
+
 // get the error code if the error is
 // associated to recognizable error types
 func getErrCode(err error) ErrCode {

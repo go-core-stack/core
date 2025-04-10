@@ -5,7 +5,9 @@ package db
 
 import (
 	"context"
+	"reflect"
 	"testing"
+	"time"
 )
 
 type MyKey struct {
@@ -133,6 +135,129 @@ func Test_ClientConnection(t *testing.T) {
 		err = client.HealthCheck(context.Background())
 		if err == nil {
 			t.Errorf("Health Check for mongo DB passed while using wrong password")
+		}
+	})
+}
+
+var (
+	mongoTestAddUpOps  int
+	mongoTestDeleteOps int
+)
+
+func myKeyWatcher(op string, wKey interface{}) {
+	_ = wKey.(*MyKey)
+	switch op {
+	case MongoAddOp, MongoUpdateOp:
+		mongoTestAddUpOps += 1
+	case MongoDeleteOp:
+		mongoTestDeleteOps += 1
+	}
+}
+
+func Test_CollectionWatch(t *testing.T) {
+	t.Run("WatchTest", func(t *testing.T) {
+		config := &MongoConfig{
+			Host:     "localhost",
+			Port:     "27017",
+			Username: "root",
+			Password: "password",
+		}
+
+		client, err := NewMongoClient(config)
+
+		if err != nil {
+			t.Errorf("failed to connect to mongo DB Error: %s", err)
+			return
+		}
+
+		err = client.HealthCheck(context.Background())
+		if err != nil {
+			t.Errorf("failed to perform Health check with DB Error: %s", err)
+		}
+
+		s := client.GetDataStore("test")
+
+		col := s.GetCollection("collection1")
+
+		err = col.SetKeyType(reflect.TypeOf(MyKey{}))
+		if err == nil {
+			t.Errorf("collection should not allow key type, when not a pointer")
+		}
+
+		// set key type to ptr of my key
+		err = col.SetKeyType(reflect.TypeOf(&MyKey{}))
+		if err != nil {
+			t.Errorf("failed to set key type for watch: %s", err)
+		}
+
+		watchCtx, cancelfn := context.WithCancel(context.Background())
+		defer func() {
+			time.Sleep(2 * time.Second)
+			cancelfn()
+			if mongoTestAddUpOps != 3 {
+				t.Errorf("Add/Update Notify: Got %d, expected 3", mongoTestAddUpOps)
+			}
+			if mongoTestDeleteOps != 2 {
+				t.Errorf("Delete Notify: Got %d, expected 2", mongoTestDeleteOps)
+			}
+		}()
+		// reset counters
+		mongoTestAddUpOps = 0
+		mongoTestDeleteOps = 0
+		col.Watch(watchCtx, myKeyWatcher)
+
+		key := &MyKey{
+			Name: "test-key",
+		}
+		data := &MyData{
+			Desc: "sample-description",
+			Val: &InternaData{
+				Test: "abc",
+			},
+		}
+
+		err = col.InsertOne(context.Background(), key, data)
+		if err != nil {
+			t.Errorf("failed to insert an entry to collection Error: %s", err)
+		}
+
+		val := &MyData{}
+		err = col.FindOne(context.Background(), key, val)
+		if err != nil {
+			t.Errorf("failed to find the entry Error: %s", err)
+		}
+
+		data.Desc = "new description"
+		data.Val.Test = "xyz"
+		err = col.UpdateOne(context.Background(), key, data, false)
+		if err != nil {
+			t.Errorf("failed to update an entry to collection Error: %s", err)
+		}
+
+		val = &MyData{}
+		err = col.FindOne(context.Background(), key, val)
+		if err != nil {
+			t.Errorf("failed to find the entry Error: %s", err)
+		}
+
+		err = col.DeleteOne(context.Background(), key)
+		if err != nil {
+			t.Errorf("failed to delete entry using key Error: %s", err)
+		}
+
+		err = col.DeleteOne(context.Background(), key)
+		if err == nil {
+			t.Errorf("attemptting delete on already deleted entry, but didn't receive expected error")
+		}
+
+		err = col.UpdateOne(context.Background(), key, data, true)
+		if err != nil {
+			t.Errorf("failed to update an entry to collection Error: %s", err)
+		}
+
+		err = col.DeleteOne(context.Background(), key)
+		if err != nil {
+			t.Errorf("failed to delete entry using key Error: %s", err)
 		}
 	})
 }
