@@ -166,6 +166,19 @@ func (c *mongoCollection) DeleteOne(ctx context.Context, key interface{}) error 
 	return nil
 }
 
+// Delete Many entries matching the delete criteria
+// returns number of entries deleted and if there is any error processing the request
+func (c *mongoCollection) DeleteMany(ctx context.Context, filter interface{}) (int64, error) {
+	resp, err := c.col.DeleteMany(ctx, filter)
+	if err != nil {
+		return 0, err
+	}
+	if resp.DeletedCount == 0 {
+		return 0, errors.Wrap(errors.NotFound, "No matching entries found to delete")
+	}
+	return resp.DeletedCount, nil
+}
+
 // watch allows getting notified whenever a change happens to a document
 // in the collection
 func (c *mongoCollection) Watch(ctx context.Context, cb WatchCallbackfn) error {
