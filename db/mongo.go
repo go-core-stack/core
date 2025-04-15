@@ -212,7 +212,10 @@ func (c *mongoCollection) Watch(ctx context.Context, filter interface{}, cb Watc
 		// keeping the handles and stack clean
 		// Note: this may not be required, if loop doesn't require it
 		// but still it is safe to keep ensuring appropriate cleanup
-		defer stream.Close(context.Background())
+		defer func() {
+			// ignore the error returned by stream close as of now
+			_ = stream.Close(context.Background())
+		}()
 		defer func() {
 			if !errors.Is(ctx.Err(), context.Canceled) {
 				// panic if the return from this function is not

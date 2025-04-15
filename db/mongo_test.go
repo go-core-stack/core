@@ -217,9 +217,9 @@ func Test_CollectionWatch(t *testing.T) {
 		mongoTestAddUpOps = 0
 		mongoTestDeleteOps = 0
 		myMongoTestDeleteOps = 0
-		col.Watch(watchCtx, nil, myKeyWatcher)
+		_ = col.Watch(watchCtx, nil, myKeyWatcher)
 		matchDeleteStage := mongo.Pipeline{bson.D{{Key: "$match", Value: bson.D{{Key: "operationType", Value: "delete"}}}}}
-		col.Watch(watchCtx, matchDeleteStage, myDeleteWatcher)
+		_ = col.Watch(watchCtx, matchDeleteStage, myDeleteWatcher)
 
 		key := &MyKey{
 			Name: "test-key",
