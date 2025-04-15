@@ -153,7 +153,5 @@ func InitializeLockOwner(ctx context.Context, store db.Store, name string) error
 	}
 
 	// allocate owner entry context
-	ownerTable.allocateOwner(name)
-
-	return nil
+	return ownerTable.allocateOwner(name)
 }
