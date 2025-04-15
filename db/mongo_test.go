@@ -8,6 +8,9 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type MyKey struct {
@@ -140,8 +143,9 @@ func Test_ClientConnection(t *testing.T) {
 }
 
 var (
-	mongoTestAddUpOps  int
-	mongoTestDeleteOps int
+	mongoTestAddUpOps    int
+	mongoTestDeleteOps   int
+	myMongoTestDeleteOps int
 )
 
 func myKeyWatcher(op string, wKey interface{}) {
@@ -152,6 +156,11 @@ func myKeyWatcher(op string, wKey interface{}) {
 	case MongoDeleteOp:
 		mongoTestDeleteOps += 1
 	}
+}
+
+func myDeleteWatcher(op string, wKey interface{}) {
+	_ = wKey.(*MyKey)
+	myMongoTestDeleteOps += 1
 }
 
 func Test_CollectionWatch(t *testing.T) {
@@ -200,11 +209,17 @@ func Test_CollectionWatch(t *testing.T) {
 			if mongoTestDeleteOps != 2 {
 				t.Errorf("Delete Notify: Got %d, expected 2", mongoTestDeleteOps)
 			}
+			if myMongoTestDeleteOps != 2 {
+				t.Errorf("expected delete count %d, but got %d", 2, myMongoTestDeleteOps)
+			}
 		}()
 		// reset counters
 		mongoTestAddUpOps = 0
 		mongoTestDeleteOps = 0
-		col.Watch(watchCtx, myKeyWatcher)
+		myMongoTestDeleteOps = 0
+		col.Watch(watchCtx, nil, myKeyWatcher)
+		matchDeleteStage := mongo.Pipeline{bson.D{{Key: "$match", Value: bson.D{{Key: "operationType", Value: "delete"}}}}}
+		col.Watch(watchCtx, matchDeleteStage, myDeleteWatcher)
 
 		key := &MyKey{
 			Name: "test-key",

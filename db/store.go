@@ -50,7 +50,10 @@ type StoreCollection interface {
 
 	// watch allows getting notified whenever a change happens to a document
 	// in the collection
-	Watch(ctx context.Context, cb WatchCallbackfn) error
+	// allow provisiong for a filter to be passed on, where the callback
+	// function to receive only conditional notifications of the events
+	// listener is interested about
+	Watch(ctx context.Context, filter interface{}, cb WatchCallbackfn) error
 }
 
 // interface definition for a store, responsible for holding group

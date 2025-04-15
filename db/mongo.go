@@ -181,9 +181,23 @@ func (c *mongoCollection) DeleteMany(ctx context.Context, filter interface{}) (i
 
 // watch allows getting notified whenever a change happens to a document
 // in the collection
-func (c *mongoCollection) Watch(ctx context.Context, cb WatchCallbackfn) error {
+// allow provisiong for a filter to be passed on, where the callback
+// function to receive only conditional notifications of the events
+// listener is interested about
+func (c *mongoCollection) Watch(ctx context.Context, filter interface{}, cb WatchCallbackfn) error {
+	if filter == nil {
+		// if passed filter is nil, initialize it to empty pipeline object
+		filter = mongo.Pipeline{}
+	}
+	switch v := filter.(type) {
+	case mongo.Pipeline:
+		// we are ok to proceed further
+		break
+	default:
+		return errors.Wrapf(errors.InvalidArgument, "Invalid watch filter pipeline type specified, %v", v)
+	}
 	// start watching on the collection with passed context
-	stream, err := c.col.Watch(ctx, mongo.Pipeline{})
+	stream, err := c.col.Watch(ctx, filter)
 	if err != nil {
 		return err
 	}
