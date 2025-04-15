@@ -14,7 +14,7 @@ func Is(err error, target error) bool {
 
 // get the error code if the error is
 // associated to recognizable error types
-func getErrCode(err error) ErrCode {
+func GetErrCode(err error) ErrCode {
 	val, ok := err.(*Error)
 	if ok {
 		return ErrCode(val.code)
@@ -60,17 +60,17 @@ func Wrapf(code ErrCode, format string, v ...any) error {
 // IsNotFound returns true if err
 // item isn't found in the space
 func IsNotFound(err error) bool {
-	return getErrCode(err) == NotFound
+	return GetErrCode(err) == NotFound
 }
 
 // IsAlreadyExists returns true if err
 // item already exists in the space
 func IsAlreadyExists(err error) bool {
-	return getErrCode(err) == AlreadyExists
+	return GetErrCode(err) == AlreadyExists
 }
 
 // IsInvalidArgument returns true if err
 // item is invalid argument
 func IsInvalidArgument(err error) bool {
-	return getErrCode(err) == InvalidArgument
+	return GetErrCode(err) == InvalidArgument
 }

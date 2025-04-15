@@ -6,11 +6,13 @@ package lock
 import (
 	"context"
 	"log"
+	"reflect"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 
 	"github.com/Prabhjot-Sethi/core/db"
 	"github.com/Prabhjot-Sethi/core/errors"
@@ -44,6 +46,13 @@ type ownerTableType struct {
 	name           string
 	key            *ownerKey
 	updateInterval time.Duration
+}
+
+func (t *ownerTableType) DeleteCallback(op string, wKey interface{}) {
+	key := wKey.(*ownerKey)
+	if key.Name == t.key.Name {
+		log.Panicln("receiving delete notification of self lock")
+	}
 }
 
 func (t *ownerTableType) updateLastSeen() {
@@ -87,7 +96,29 @@ func (t *ownerTableType) allocateOwner(name string) error {
 			Name: id + "-" + uid.String(),
 		}
 	}
-	err := t.col.InsertOne(context.Background(), t.key, data)
+
+	matchDeleteStage := mongo.Pipeline{
+		bson.D{{
+			Key: "$match",
+			Value: bson.D{{
+				Key:   "operationType",
+				Value: "delete",
+			}},
+		}},
+	}
+
+	err := t.col.SetKeyType(reflect.TypeOf(&ownerKey{}))
+	if err != nil {
+		return errors.Wrapf(errors.GetErrCode(err), "Got error while setting key type for watch notification: %s", err)
+	}
+
+	// watch only for delete notification
+	err = t.col.Watch(t.ctx, matchDeleteStage, t.DeleteCallback)
+	if err != nil {
+		return err
+	}
+
+	err = t.col.InsertOne(context.Background(), t.key, data)
 	if err != nil {
 		return err
 	}
