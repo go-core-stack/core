@@ -44,6 +44,10 @@ type StoreCollection interface {
 	// remove one entry from the collection matching the given key
 	DeleteOne(ctx context.Context, key interface{}) error
 
+	// Delete Many entries matching the delete criteria
+	// returns number of entries deleted and if there is any error processing the request
+	DeleteMany(ctx context.Context, filter interface{}) (int64, error)
+
 	// watch allows getting notified whenever a change happens to a document
 	// in the collection
 	Watch(ctx context.Context, cb WatchCallbackfn) error
