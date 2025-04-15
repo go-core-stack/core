@@ -5,6 +5,7 @@ package errors
 
 import (
 	base "errors"
+	"fmt"
 )
 
 func Is(err error, target error) bool {
@@ -44,6 +45,15 @@ func Wrap(code ErrCode, msg string) error {
 	return &Error{
 		code: code,
 		msg:  msg,
+	}
+}
+
+// Wraps the error msg with recognized error codes
+// using specified message format
+func Wrapf(code ErrCode, format string, v ...any) error {
+	return &Error{
+		code: code,
+		msg:  fmt.Sprintf(format, v...),
 	}
 }
 
