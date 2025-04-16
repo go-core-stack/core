@@ -72,7 +72,7 @@ func (t *ownerTableType) deleteAgedOwnerTableEntries() {
 
 	filter := bson.D{
 		{
-			Key:   "",
+			Key:   "lastSeen",
 			Value: bson.D{{Key: "$lt", Value: filterTime}},
 		},
 	}
