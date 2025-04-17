@@ -141,6 +141,9 @@ func (c *mongoCollection) FindOne(ctx context.Context, key interface{}, data int
 // Find multiple entries from the store collection for the given filter, where the data
 // value is returned as a list based on the object type passed to it
 func (c *mongoCollection) FindMany(ctx context.Context, filter interface{}, data interface{}) error {
+	if filter == nil {
+		filter = bson.D{}
+	}
 	cursor, err := c.col.Find(ctx, filter)
 	if err != nil {
 		return err
