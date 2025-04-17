@@ -256,7 +256,7 @@ func (c *mongoCollection) Watch(ctx context.Context, filter interface{}, cb Watc
 			if keyType != nil {
 				key = reflect.New(keyType.Elem()).Interface()
 			} else {
-				key = bson.D{}
+				key = bson.M{}
 			}
 
 			marshaledData, err := bson.Marshal(bKey)
