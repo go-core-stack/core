@@ -1,0 +1,145 @@
+// Copyright © 2025 Prabhjot Singh Sethi, All Rights reserved
+// Author: Prabhjot Singh Sethi <prabhjot.sethi@gmail.com>
+
+package reconciler
+
+import (
+	"context"
+	"log"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/Prabhjot-Sethi/core/db"
+	"go.mongodb.org/mongo-driver/bson"
+)
+
+type MyKey struct {
+	Name string
+}
+
+type MyData struct {
+	Desc string
+}
+
+type MyKeyObject struct {
+	Key  *MyKey `bson:"_id,omitempty"`
+	Desc string
+}
+
+type MyTable struct {
+	ManagerImpl
+	col db.StoreCollection
+}
+
+func (t *MyTable) ReconcilerGetAllKeys() []any {
+	myKeys := []MyKeyObject{}
+	keys := []any{}
+	t.col.FindMany(context.Background(), nil, &myKeys)
+	for _, k := range myKeys {
+		keys = append(keys, k.Key)
+	}
+	return []any(keys)
+}
+
+var table *MyTable
+
+func performMongoSetup() {
+	config := &db.MongoConfig{
+		Host:     "localhost",
+		Port:     "27017",
+		Username: "root",
+		Password: "password",
+	}
+
+	client, err := db.NewMongoClient(config)
+
+	if err != nil {
+		log.Printf("failed to connect to mongo DB Error: %s", err)
+		return
+	}
+
+	s := client.GetDataStore("test")
+	col := s.GetCollection("collection-reconciler")
+
+	col.DeleteMany(context.Background(), bson.D{})
+
+	key := &MyKey{
+		Name: "test-key-1",
+	}
+	data := &MyData{
+		Desc: "sample-description",
+	}
+
+	err = col.InsertOne(context.Background(), key, data)
+	if err != nil {
+		log.Printf("failed to insert an entry to collection Error: %s", err)
+	}
+
+	table = &MyTable{}
+	table.col = col
+	table.col.SetKeyType(reflect.TypeOf(&MyKey{}))
+	table.Initialize(context.Background(), col, table)
+}
+
+func tearDownMongoSetup() {
+	table.col.DeleteMany(context.Background(), bson.D{})
+}
+
+type MyController struct {
+	Controller
+	reEnqueue     bool
+	notifications int
+}
+
+func (c *MyController) Reconcile(k any) (*Result, error) {
+	key := k.(*MyKey)
+	if key.Name == "" {
+		log.Panicln("Got invalid key response")
+	}
+	c.notifications += 1
+	if c.reEnqueue {
+		c.reEnqueue = false
+		return &Result{
+			RequeueAfter: 1 * time.Second,
+		}, nil
+	}
+	return &Result{}, nil
+}
+
+func Test_ReconcilerBaseValidations(t *testing.T) {
+	performMongoSetup()
+
+	crtl := &MyController{}
+
+	err := table.Register("test", crtl)
+	if err != nil {
+		t.Errorf("Got Error %s, while registering controller", err)
+	}
+
+	time.Sleep(1 * time.Second)
+	if crtl.notifications != 1 {
+		t.Errorf("Got %d notifications, expected only 1", crtl.notifications)
+	}
+
+	crtl.reEnqueue = true
+
+	key := &MyKey{
+		Name: "test-key-2",
+	}
+	data := &MyData{
+		Desc: "sample-description",
+	}
+
+	err = table.col.InsertOne(context.Background(), key, data)
+	if err != nil {
+		log.Printf("failed to insert an entry to collection Error: %s", err)
+	}
+
+	time.Sleep(3 * time.Second)
+	if crtl.notifications != 3 {
+		t.Errorf("Got %d notifications, expected 3", crtl.notifications)
+	}
+
+	tearDownMongoSetup()
+}
