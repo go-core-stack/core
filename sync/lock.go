@@ -1,4 +1,4 @@
-package lock
+package sync
 
 import (
 	"context"
