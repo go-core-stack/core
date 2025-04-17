@@ -36,7 +36,10 @@ type MyTable struct {
 func (t *MyTable) ReconcilerGetAllKeys() []any {
 	myKeys := []MyKeyObject{}
 	keys := []any{}
-	t.col.FindMany(context.Background(), nil, &myKeys)
+	err := t.col.FindMany(context.Background(), nil, &myKeys)
+	if err != nil {
+		log.Panicf("MyTable: got error while fetching all keys %s", err)
+	}
 	for _, k := range myKeys {
 		keys = append(keys, k.Key)
 	}
@@ -63,7 +66,10 @@ func performMongoSetup() {
 	s := client.GetDataStore("test")
 	col := s.GetCollection("collection-reconciler")
 
-	col.DeleteMany(context.Background(), bson.D{})
+	_, err = col.DeleteMany(context.Background(), bson.D{})
+	if err != nil {
+		log.Panicf("Setup: failed to cleanup existing entries: %s", err)
+	}
 
 	key := &MyKey{
 		Name: "test-key-1",
@@ -79,12 +85,12 @@ func performMongoSetup() {
 
 	table = &MyTable{}
 	table.col = col
-	table.col.SetKeyType(reflect.TypeOf(&MyKey{}))
-	table.Initialize(context.Background(), col, table)
+	_ = table.col.SetKeyType(reflect.TypeOf(&MyKey{}))
+	_ = table.Initialize(context.Background(), col, table)
 }
 
 func tearDownMongoSetup() {
-	table.col.DeleteMany(context.Background(), bson.D{})
+	_, _ = table.col.DeleteMany(context.Background(), bson.D{})
 }
 
 type MyController struct {
