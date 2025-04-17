@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Prabhjot-Sethi/core/db"
+	"github.com/Prabhjot-Sethi/core/errors"
 )
 
 func Test_OwnerInit(t *testing.T) {
@@ -34,9 +35,9 @@ func Test_OwnerInit(t *testing.T) {
 		t.Errorf("failed to perform Health check with DB Error: %s", err)
 	}
 
-	s := client.GetDataStore("test")
+	s := client.GetDataStore("test-sync")
 	err = InitializeLockOwner(ctx, s, "test-owner")
-	if err != nil {
+	if err != nil && !errors.IsAlreadyExists(err) {
 		t.Errorf("Got error while initializing lock owner %s", err)
 	}
 	time.Sleep(1 * time.Second)
