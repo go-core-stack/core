@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Prabhjot-Sethi/core/db"
+	"github.com/Prabhjot-Sethi/core/errors"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -89,6 +90,7 @@ func tearDownMongoSetup() {
 type MyController struct {
 	Controller
 	reEnqueue     bool
+	retError      bool
 	notifications int
 }
 
@@ -98,6 +100,10 @@ func (c *MyController) Reconcile(k any) (*Result, error) {
 		log.Panicln("Got invalid key response")
 	}
 	c.notifications += 1
+	if c.retError {
+		c.retError = false
+		return nil, errors.Wrap(errors.Unknown, "test error return")
+	}
 	if c.reEnqueue {
 		c.reEnqueue = false
 		return &Result{
@@ -139,6 +145,24 @@ func Test_ReconcilerBaseValidations(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	if crtl.notifications != 3 {
 		t.Errorf("Got %d notifications, expected 3", crtl.notifications)
+	}
+
+	crtl.retError = true
+	key = &MyKey{
+		Name: "test-key-3",
+	}
+	data = &MyData{
+		Desc: "sample-description",
+	}
+
+	err = table.col.InsertOne(context.Background(), key, data)
+	if err != nil {
+		log.Printf("failed to insert an entry to collection Error: %s", err)
+	}
+
+	time.Sleep(1 * time.Second)
+	if crtl.notifications != 5 {
+		t.Errorf("Got %d notifications, expected 5", crtl.notifications)
 	}
 
 	tearDownMongoSetup()
