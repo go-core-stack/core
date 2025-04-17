@@ -10,4 +10,8 @@
 __debug_bin
 
 # ignore if any diff present in the repo
-*.dif
+*.diff
+
+# we are designating .bk extension for backup files
+# ignore the same
+*.bk
