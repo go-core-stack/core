@@ -67,7 +67,7 @@ func performMongoSetup() {
 	col := s.GetCollection("collection-reconciler")
 
 	_, err = col.DeleteMany(context.Background(), bson.D{})
-	if err != nil {
+	if err != nil && !errors.IsNotFound(err) {
 		log.Panicf("Setup: failed to cleanup existing entries: %s", err)
 	}
 
