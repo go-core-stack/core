@@ -167,6 +167,17 @@ var (
 // definition for all the consuming processes to ensure synchronisation to work
 // in a seemless manner
 func InitializeLockOwner(ctx context.Context, store db.Store, name string) error {
+	return InitializeLockOwnerWithUpdateInterval(ctx, store, name, defaultOwnerUpdateInterval)
+}
+
+// Initialize the Lock Owner management constructs, anyone while working with
+// this library requires to use this function before actually start consuming
+// any functionality from here.
+// This also allows specifying the interval to ensuring configurability
+// Also it is callers responsibility to ensure providing uniform store
+// definition for all the consuming processes to ensure synchronisation to work
+// in a seemless manner
+func InitializeLockOwnerWithUpdateInterval(ctx context.Context, store db.Store, name string, interval time.Duration) error {
 	ownerTableInit.Lock()
 	defer ownerTableInit.Unlock()
 	if ownerTable != nil {
@@ -180,7 +191,7 @@ func InitializeLockOwner(ctx context.Context, store db.Store, name string) error
 		store:          store,
 		col:            col,
 		name:           name,
-		updateInterval: time.Duration(defaultOwnerUpdateInterval * time.Second),
+		updateInterval: time.Duration(interval * time.Second),
 	}
 
 	// allocate owner entry context
