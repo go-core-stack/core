@@ -29,6 +29,17 @@ type mongoCollection struct {
 	keyType reflect.Type
 }
 
+// interprets mongo db error and returns library parsable error codes
+func interpretMongoError(err error) error {
+	if mongo.IsDuplicateKeyError(err) {
+		return errors.Wrap(errors.AlreadyExists, err.Error())
+	}
+	if err == mongo.ErrNoDocuments {
+		return errors.Wrap(errors.NotFound, err.Error())
+	}
+	return err
+}
+
 // Set KeyType for the collection, this is not mandatory
 // while the key type will be used by the interface implementer
 // mainly for Watch Callback for providing decoded key, if not
@@ -84,9 +95,8 @@ func (c *mongoCollection) InsertOne(ctx context.Context, key interface{}, data i
 
 	_, err = c.col.InsertOne(ctx, bd)
 	if err != nil {
-		// TODO(prabhjot) we may need to identify and differentiate
-		// Already Exist error here.
-		return err
+		// identify and differentiate Already Exist error here.
+		return interpretMongoError(err)
 	}
 	return nil
 }
@@ -113,7 +123,7 @@ func (c *mongoCollection) UpdateOne(ctx context.Context, key interface{}, data i
 		opts)
 
 	if err != nil {
-		return err
+		return interpretMongoError(err)
 	}
 
 	// check there should be at least one entry in matched count
@@ -133,7 +143,7 @@ func (c *mongoCollection) FindOne(ctx context.Context, key interface{}, data int
 	// object passed by the caller
 	if err := resp.Decode(data); err != nil {
 		// TODO(prabhjot) might have to identify not found error
-		return err
+		return interpretMongoError(err)
 	}
 	return nil
 }
@@ -146,7 +156,7 @@ func (c *mongoCollection) FindMany(ctx context.Context, filter interface{}, data
 	}
 	cursor, err := c.col.Find(ctx, filter)
 	if err != nil {
-		return err
+		return interpretMongoError(err)
 	}
 	if err = cursor.All(ctx, data); err != nil {
 		return err
@@ -160,7 +170,7 @@ func (c *mongoCollection) DeleteOne(ctx context.Context, key interface{}) error 
 	if err != nil {
 		// TODO(prabhjot) we may need to identify and differentiate
 		// Not found error here
-		return err
+		return interpretMongoError(err)
 	}
 	if resp.DeletedCount == 0 {
 		return errors.Wrap(errors.NotFound, "No Document found")
@@ -174,7 +184,7 @@ func (c *mongoCollection) DeleteOne(ctx context.Context, key interface{}) error 
 func (c *mongoCollection) DeleteMany(ctx context.Context, filter interface{}) (int64, error) {
 	resp, err := c.col.DeleteMany(ctx, filter)
 	if err != nil {
-		return 0, err
+		return 0, interpretMongoError(err)
 	}
 	if resp.DeletedCount == 0 {
 		return 0, errors.Wrap(errors.NotFound, "No matching entries found to delete")
