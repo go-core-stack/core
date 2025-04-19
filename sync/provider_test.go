@@ -6,17 +6,18 @@ package sync
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Prabhjot-Sethi/core/db"
 	"github.com/Prabhjot-Sethi/core/errors"
 )
 
-type lockKey struct {
+type myProviderKey struct {
 	Scope string
 	Name  string
 }
 
-func Test_LockBaseTesting(t *testing.T) {
+func Test_ProviderBaseTesting(t *testing.T) {
 	config := &db.MongoConfig{
 		Host:     "localhost",
 		Port:     "27017",
@@ -35,37 +36,39 @@ func Test_LockBaseTesting(t *testing.T) {
 
 	err = InitializeOwner(context.Background(), s, "test-owner")
 	if err != nil && !errors.IsAlreadyExists(err) {
-		t.Errorf("Got error while initializing lock owner %s", err)
+		t.Errorf("Got error while initializing sync owner %s", err)
 	}
 
-	tbl, err := LocateLockTable(s, "demo-test")
+	tbl, err := LocateProviderTable(s)
 
 	if err != nil {
-		t.Errorf("failed to locate Lock Table: %s", err)
+		t.Errorf("failed to locate provider Table: %s", err)
 	}
 
-	key1 := &lockKey{
+	key1 := &myProviderKey{
 		Scope: "scope-1",
 		Name:  "test-key",
 	}
 
-	lock, err := tbl.TryAcquire(context.Background(), key1)
+	provider, err := tbl.CreateProvider(context.Background(), key1)
 	if err != nil {
-		t.Errorf("failed to acquire lock: %s", err)
+		t.Errorf("failed to create Provider: %s", err)
 	}
-	_, err = tbl.TryAcquire(context.Background(), key1)
-	if err == nil {
-		t.Errorf("Acquired lock for %s:%s, which should have failed", key1.Scope, key1.Name)
+	_, err = tbl.CreateProvider(context.Background(), key1)
+	if err != nil {
+		t.Errorf("failed to create Provider: %s", err)
 	}
-	key2 := &lockKey{
+	key2 := &myProviderKey{
 		Scope: "scope-2",
 		Name:  "test-key",
 	}
 
-	lock1, err := tbl.TryAcquire(context.Background(), key2)
+	provider1, err := tbl.CreateProvider(context.Background(), key2)
 	if err != nil {
 		t.Errorf("failed to acquire lock: %s", err)
 	}
-	_ = lock1.Close()
-	_ = lock.Close()
+	_ = provider1.Close()
+	_ = provider.Close()
+
+	time.Sleep(2 * time.Second)
 }
