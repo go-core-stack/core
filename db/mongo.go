@@ -59,7 +59,7 @@ func (c *mongoCollection) SetKeyType(keyType reflect.Type) error {
 // inserts one entry with given key and data to the collection
 // returns errors if entry already exists or if there is a connection
 // error with the database server
-func (c *mongoCollection) InsertOne(ctx context.Context, key interface{}, data interface{}) error {
+func (c *mongoCollection) InsertOne(ctx context.Context, key any, data any) error {
 	if data == nil {
 		return errors.Wrap(errors.InvalidArgument, "db Insert error: No data to store")
 	}
@@ -105,7 +105,7 @@ func (c *mongoCollection) InsertOne(ctx context.Context, key interface{}, data i
 // acts based on the flag passed for upsert
 // returns errors if entry not found while upsert flag is false or if
 // there is a connection error with the database server
-func (c *mongoCollection) UpdateOne(ctx context.Context, key interface{}, data interface{}, upsert bool) error {
+func (c *mongoCollection) UpdateOne(ctx context.Context, key any, data any, upsert bool) error {
 	if data == nil {
 		return errors.Wrap(errors.InvalidArgument, "db Insert error: No data to store")
 	}
@@ -137,7 +137,7 @@ func (c *mongoCollection) UpdateOne(ctx context.Context, key interface{}, data i
 
 // Find one entry from the store collection for the given key, where the data
 // value is returned based on the object type passed to it
-func (c *mongoCollection) FindOne(ctx context.Context, key interface{}, data interface{}) error {
+func (c *mongoCollection) FindOne(ctx context.Context, key any, data any) error {
 	resp := c.col.FindOne(ctx, bson.M{"_id": key})
 	// decode the value returned by the mongodb client into the data
 	// object passed by the caller
@@ -150,7 +150,7 @@ func (c *mongoCollection) FindOne(ctx context.Context, key interface{}, data int
 
 // Find multiple entries from the store collection for the given filter, where the data
 // value is returned as a list based on the object type passed to it
-func (c *mongoCollection) FindMany(ctx context.Context, filter interface{}, data interface{}) error {
+func (c *mongoCollection) FindMany(ctx context.Context, filter any, data any) error {
 	if filter == nil {
 		filter = bson.D{}
 	}
@@ -164,8 +164,20 @@ func (c *mongoCollection) FindMany(ctx context.Context, filter interface{}, data
 	return nil
 }
 
+// Return count of entries matching the provided filter
+func (c *mongoCollection) Count(ctx context.Context, filter any) (int64, error) {
+	if filter == nil {
+		filter = bson.D{}
+	}
+	count, err := c.col.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, interpretMongoError(err)
+	}
+	return count, nil
+}
+
 // remove one entry from the collection matching the given key
-func (c *mongoCollection) DeleteOne(ctx context.Context, key interface{}) error {
+func (c *mongoCollection) DeleteOne(ctx context.Context, key any) error {
 	resp, err := c.col.DeleteOne(ctx, bson.M{"_id": key})
 	if err != nil {
 		// TODO(prabhjot) we may need to identify and differentiate
@@ -181,7 +193,7 @@ func (c *mongoCollection) DeleteOne(ctx context.Context, key interface{}) error 
 
 // Delete Many entries matching the delete criteria
 // returns number of entries deleted and if there is any error processing the request
-func (c *mongoCollection) DeleteMany(ctx context.Context, filter interface{}) (int64, error) {
+func (c *mongoCollection) DeleteMany(ctx context.Context, filter any) (int64, error) {
 	resp, err := c.col.DeleteMany(ctx, filter)
 	if err != nil {
 		return 0, interpretMongoError(err)
@@ -197,7 +209,7 @@ func (c *mongoCollection) DeleteMany(ctx context.Context, filter interface{}) (i
 // allow provisiong for a filter to be passed on, where the callback
 // function to receive only conditional notifications of the events
 // listener is interested about
-func (c *mongoCollection) Watch(ctx context.Context, filter interface{}, cb WatchCallbackfn) error {
+func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbackfn) error {
 	if filter == nil {
 		// if passed filter is nil, initialize it to empty pipeline object
 		filter = mongo.Pipeline{}
@@ -262,7 +274,7 @@ func (c *mongoCollection) Watch(ctx context.Context, filter interface{}, cb Watc
 			}
 
 			// key that will be shared with callback function
-			var key interface{}
+			var key any
 			if keyType != nil {
 				key = reflect.New(keyType.Elem()).Interface()
 			} else {
