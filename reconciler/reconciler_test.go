@@ -33,6 +33,10 @@ type MyTable struct {
 	col db.StoreCollection
 }
 
+func (t *MyTable) Callback(op string, wKey any) {
+	t.NotifyCallback(wKey)
+}
+
 func (t *MyTable) ReconcilerGetAllKeys() []any {
 	myKeys := []MyKeyObject{}
 	keys := []any{}
@@ -86,7 +90,8 @@ func performMongoSetup() {
 	table = &MyTable{}
 	table.col = col
 	_ = table.col.SetKeyType(reflect.TypeOf(&MyKey{}))
-	_ = table.Initialize(context.Background(), col, table)
+	_ = table.col.Watch(context.Background(), nil, table.Callback)
+	_ = table.Initialize(context.Background(), table)
 }
 
 func tearDownMongoSetup() {

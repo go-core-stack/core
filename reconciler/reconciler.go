@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Prabhjot-Sethi/core/db"
 	"github.com/Prabhjot-Sethi/core/errors"
 )
 
@@ -60,11 +59,10 @@ type ManagerImpl struct {
 	parent      Manager
 	controllers sync.Map
 	ctx         context.Context
-	col         db.StoreCollection
 }
 
 // callback registered with the data store
-func (m *ManagerImpl) entryCallback(op string, wKey any) {
+func (m *ManagerImpl) NotifyCallback(wKey any) {
 	// iterate over all the registered clients
 	m.controllers.Range(func(name, data any) bool {
 		crtl, ok := data.(*controllerData)
@@ -82,18 +80,12 @@ func (m *ManagerImpl) entryCallback(op string, wKey any) {
 }
 
 // Initialize the manager with context and relevant collection to work with
-func (m *ManagerImpl) Initialize(ctx context.Context, col db.StoreCollection, parent Manager) error {
-	if m.col != nil {
+func (m *ManagerImpl) Initialize(ctx context.Context, parent Manager) error {
+	if m.parent != nil {
 		return errors.Wrap(errors.AlreadyExists, "Initialization already done")
 	}
 
-	err := col.Watch(ctx, nil, m.entryCallback)
-	if err != nil {
-		return err
-	}
-
 	m.ctx = ctx
-	m.col = col
 	m.parent = parent
 
 	return nil
@@ -101,7 +93,7 @@ func (m *ManagerImpl) Initialize(ctx context.Context, col db.StoreCollection, pa
 
 // register a controller with manager for reconciliation
 func (m *ManagerImpl) Register(name string, crtl Controller) error {
-	if m.col == nil {
+	if m.parent == nil {
 		return errors.Wrap(errors.InvalidArgument, "manager is not initialized")
 	}
 	data := &controllerData{
