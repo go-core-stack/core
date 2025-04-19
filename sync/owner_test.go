@@ -36,9 +36,9 @@ func Test_OwnerInit(t *testing.T) {
 	}
 
 	s := client.GetDataStore("test-sync")
-	err = InitializeLockOwner(ctx, s, "test-owner")
+	err = InitializeOwner(ctx, s, "test-owner")
 	if err != nil && !errors.IsAlreadyExists(err) {
-		t.Errorf("Got error while initializing lock owner %s", err)
+		t.Errorf("Got error while initializing sync owner %s", err)
 	}
 	time.Sleep(1 * time.Second)
 }

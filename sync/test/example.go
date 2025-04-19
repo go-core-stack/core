@@ -37,10 +37,17 @@ func main() {
 	}
 
 	s := client.GetDataStore("test-sync")
-	err = sync.InitializeLockOwnerWithUpdateInterval(ctx, s, "test-owner", 1)
+	err = sync.InitializeOwnerWithUpdateInterval(ctx, s, "test-owner", 10)
 	if err != nil && !errors.IsAlreadyExists(err) {
-		log.Panicf("Got error while initializing lock owner %s", err)
+		log.Panicf("Got error while initializing sync owner %s", err)
 	}
+
+	_, err = sync.LocateProviderTable(s)
+
+	if err != nil {
+		log.Panicf("failed to locate provider Table: %s", err)
+	}
+
 	for {
 		// loop endlessly to run aging process for owner table
 		time.Sleep(5 * time.Second)

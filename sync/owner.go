@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	// collection name for Lock ownership table
-	lockOwnerShipCollection = "lock-owner-table"
+	// collection name for sync ownership table
+	ownerShipCollection = "owner-table"
 
 	// default periodic interval for updating
 	// last seen time for owner, in seconds
@@ -51,7 +51,7 @@ type ownerTableType struct {
 func (t *ownerTableType) DeleteCallback(op string, wKey interface{}) {
 	key := wKey.(*ownerKey)
 	if key.Name == t.key.Name {
-		log.Panicln("receiving delete notification of self lock")
+		log.Panicln("OnwerTable: receiving delete notification of self")
 	}
 }
 
@@ -78,7 +78,7 @@ func (t *ownerTableType) deleteAgedOwnerTableEntries() {
 	}
 	_, err := t.col.DeleteMany(t.ctx, filter)
 	if err != nil && !errors.IsNotFound(err) {
-		log.Printf("failed to perform delete of aged lock owner entries")
+		log.Printf("failed to perform delete of aged owner table entries")
 	}
 }
 
@@ -143,7 +143,7 @@ func (t *ownerTableType) allocateOwner(name string) error {
 				// released
 				err = t.col.DeleteOne(context.Background(), t.key)
 				if err != nil {
-					log.Printf("failed deleting self owner lock: %s, got error: %s", t.key.Name, err)
+					log.Printf("failed deleting self owner entry: %s, got error: %s", t.key.Name, err)
 				}
 				return
 			}
@@ -160,31 +160,31 @@ var (
 	ownerTableInit sync.Mutex
 )
 
-// Initialize the Lock Owner management constructs, anyone while working with
+// Initialize the Sync Owner management constructs, anyone while working with
 // this library requires to use this function before actually start consuming
 // any functionality from here.
 // Also it is callers responsibility to ensure providing uniform store
 // definition for all the consuming processes to ensure synchronisation to work
 // in a seemless manner
-func InitializeLockOwner(ctx context.Context, store db.Store, name string) error {
-	return InitializeLockOwnerWithUpdateInterval(ctx, store, name, defaultOwnerUpdateInterval)
+func InitializeOwner(ctx context.Context, store db.Store, name string) error {
+	return InitializeOwnerWithUpdateInterval(ctx, store, name, defaultOwnerUpdateInterval)
 }
 
-// Initialize the Lock Owner management constructs, anyone while working with
+// Initialize the Owner management constructs, anyone while working with
 // this library requires to use this function before actually start consuming
 // any functionality from here.
 // This also allows specifying the interval to ensuring configurability
 // Also it is callers responsibility to ensure providing uniform store
 // definition for all the consuming processes to ensure synchronisation to work
 // in a seemless manner
-func InitializeLockOwnerWithUpdateInterval(ctx context.Context, store db.Store, name string, interval time.Duration) error {
+func InitializeOwnerWithUpdateInterval(ctx context.Context, store db.Store, name string, interval time.Duration) error {
 	ownerTableInit.Lock()
 	defer ownerTableInit.Unlock()
 	if ownerTable != nil {
-		return errors.Wrap(errors.AlreadyExists, "Lock Owner is already initialized")
+		return errors.Wrap(errors.AlreadyExists, "Sync Owner Table is already initialized")
 	}
 
-	col := store.GetCollection(lockOwnerShipCollection)
+	col := store.GetCollection(ownerShipCollection)
 
 	ownerTable = &ownerTableType{
 		ctx:            ctx,
