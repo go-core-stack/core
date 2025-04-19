@@ -270,6 +270,15 @@ func Test_CollectionWatch(t *testing.T) {
 			t.Errorf("failed to update an entry to collection Error: %s", err)
 		}
 
+		count, err := col.Count(context.Background(), nil)
+		if err != nil {
+			t.Errorf("failed to get count of entries in collection: %s", err)
+		}
+
+		if count != 1 {
+			t.Errorf("Expected 1 entries in table but got %d", count)
+		}
+
 		err = col.DeleteOne(context.Background(), key)
 		if err != nil {
 			t.Errorf("failed to delete entry using key Error: %s", err)

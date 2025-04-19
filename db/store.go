@@ -12,7 +12,7 @@ import (
 )
 
 // WatchCallbackfn responsible for
-type WatchCallbackfn func(op string, key interface{})
+type WatchCallbackfn func(op string, key any)
 
 // interface definition for a collection in store
 type StoreCollection interface {
@@ -26,34 +26,37 @@ type StoreCollection interface {
 	SetKeyType(keyType reflect.Type) error
 
 	// insert one entry to the collection for the given key and data
-	InsertOne(ctx context.Context, key interface{}, data interface{}) error
+	InsertOne(ctx context.Context, key any, data any) error
 
 	// update one entry in the collection for the given key and data
 	// if upsert flag is set, it would insert an entry if it doesn't
 	// exist while updating
-	UpdateOne(ctx context.Context, key interface{}, data interface{}, upsert bool) error
+	UpdateOne(ctx context.Context, key any, data any, upsert bool) error
 
 	// Find one entry from the store collection for the given key, where the data
 	// value is returned based on the object type passed to it
-	FindOne(ctx context.Context, key interface{}, data interface{}) error
+	FindOne(ctx context.Context, key any, data any) error
 
 	// Find multiple entries from the store collection for the given filter, where the data
 	// value is returned as a list based on the object type passed to it
-	FindMany(ctx context.Context, filter interface{}, data interface{}) error
+	FindMany(ctx context.Context, filter any, data any) error
+
+	// Return count of entries matching the provided filter
+	Count(ctx context.Context, filter any) (int64, error)
 
 	// remove one entry from the collection matching the given key
-	DeleteOne(ctx context.Context, key interface{}) error
+	DeleteOne(ctx context.Context, key any) error
 
 	// Delete Many entries matching the delete criteria
 	// returns number of entries deleted and if there is any error processing the request
-	DeleteMany(ctx context.Context, filter interface{}) (int64, error)
+	DeleteMany(ctx context.Context, filter any) (int64, error)
 
 	// watch allows getting notified whenever a change happens to a document
 	// in the collection
 	// allow provisiong for a filter to be passed on, where the callback
 	// function to receive only conditional notifications of the events
 	// listener is interested about
-	Watch(ctx context.Context, filter interface{}, cb WatchCallbackfn) error
+	Watch(ctx context.Context, filter any, cb WatchCallbackfn) error
 }
 
 // interface definition for a store, responsible for holding group
