@@ -15,6 +15,7 @@ import (
 
 	"github.com/Prabhjot-Sethi/core/db"
 	"github.com/Prabhjot-Sethi/core/errors"
+	"github.com/Prabhjot-Sethi/core/reconciler"
 )
 
 const (
@@ -62,6 +63,9 @@ type ProviderTable struct {
 
 	// Context cancel function
 	cancelFn context.CancelFunc
+
+	// observer table
+	oTbl *observerTable
 }
 
 // Provider Table callback function, currently meant for
@@ -71,8 +75,23 @@ type ProviderTable struct {
 func (t *ProviderTable) Callback(op string, wKey interface{}) {
 	key := wKey.(*providerKey)
 
+	// ensure updating the observer table based on availability
+	// or unavailability of provider
+	obKey := &observerCountKey{
+		ExtKey: key.ExtKey,
+	}
+	cnt, err := t.col.Count(context.Background(), obKey)
+	if err != nil {
+		log.Panicf("failed to fetch count of providers: %s", err)
+	}
+	if cnt == 0 {
+		t.oTbl.deleteProvider(obKey.ExtKey)
+	} else {
+		t.oTbl.insertProvider(obKey.ExtKey)
+	}
+
 	entry := &providerData{}
-	err := t.col.FindOne(context.Background(), key, entry)
+	err = t.col.FindOne(context.Background(), key, entry)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return
@@ -117,6 +136,22 @@ func (t *ProviderTable) handleOwnerRelease(op string, wKey any) {
 	if err != nil && !errors.IsNotFound(err) {
 		log.Panicf("failed to perform delete of providers for owner %s, got error: %s", key.Name, err)
 	}
+}
+
+// Allow a reconciler controller to register and get notified for availability
+// and unavailability of providers
+func (t *ProviderTable) Register(name string, crtl reconciler.Controller) error {
+	return t.oTbl.Register(name, crtl)
+}
+
+// Get List of Providers
+func (t *ProviderTable) GetProviderList() []any {
+	return t.oTbl.getProviderList()
+}
+
+// Checks if provider exists
+func (t *ProviderTable) IsProviderAvailable(key any) bool {
+	return t.oTbl.isProviderAvailable(key)
 }
 
 // create provider based on the specified key, typically a string,
@@ -175,6 +210,15 @@ func LocateProviderTableWithName(store db.Store, name string) (*ProviderTable, e
 		col:      col,
 		ctx:      ctx,
 		cancelFn: cancelFn,
+		oTbl: &observerTable{
+			providers: make(map[any]struct{}),
+		},
+	}
+
+	err := table.oTbl.Initialize(ctx, table.oTbl)
+	if err != nil {
+		cancelFn()
+		return nil, err
 	}
 
 	matchDeleteStage := mongo.Pipeline{
@@ -188,7 +232,7 @@ func LocateProviderTableWithName(store db.Store, name string) (*ProviderTable, e
 	}
 
 	// watch only for delete notification of lock owner
-	err := ownerTable.col.Watch(ctx, matchDeleteStage, table.handleOwnerRelease)
+	err = ownerTable.col.Watch(ctx, matchDeleteStage, table.handleOwnerRelease)
 	if err != nil {
 		cancelFn()
 		return nil, err
