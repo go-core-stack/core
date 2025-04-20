@@ -60,6 +60,32 @@ func (t *LockTable) Callback(op string, wKey interface{}) {
 	// handle callback as and when needed
 	// we may need notification of release of locks
 	// allowing others to start working on it
+	data := &lockData{}
+	err := t.col.FindOne(context.Background(), wKey, data)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return
+		}
+		log.Panicln("failed to find lock entry corresponding to key", wKey)
+	}
+
+	oKey := &ownerKey{
+		Name: data.Owner,
+	}
+	oData := &ownerData{}
+	err = ownerTable.col.FindOne(context.Background(), oKey, oData)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			filter := bson.D{{
+				Key:   "owner",
+				Value: oKey.Name,
+			}}
+			_, err := t.col.DeleteMany(t.ctx, filter)
+			if err != nil && !errors.IsNotFound(err) {
+				log.Panicf("failed to perform delete of locks for owner %s, got error: %s", oKey.Name, err)
+			}
+		}
+	}
 }
 
 func (t *LockTable) handleOwnerRelease(op string, wKey interface{}) {
