@@ -64,7 +64,7 @@ func Test_ObserverBaseTesting(t *testing.T) {
 		providers: map[string]struct{}{},
 		tbl:       tbl,
 	}
-	tbl.Register("test-observer", obs)
+	_ = tbl.Register("test-observer", obs)
 
 	provider, err := tbl.CreateProvider(context.Background(), "test-key")
 	if err != nil {

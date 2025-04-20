@@ -13,10 +13,9 @@ import (
 	"reflect"
 	"strconv"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/Prabhjot-Sethi/core/errors"
 )
@@ -113,7 +112,7 @@ func (c *mongoCollection) UpdateOne(ctx context.Context, key any, data any, upse
 		return errors.Wrap(errors.InvalidArgument, "db Insert error: No Key specified to store")
 	}
 
-	opts := options.Update().SetUpsert(upsert)
+	opts := options.UpdateOne().SetUpsert(upsert)
 	resp, err := c.col.UpdateOne(
 		ctx,
 		bson.M{"_id": key},
@@ -261,13 +260,20 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 				return
 			}
 
-			dk, ok := data["documentKey"].(bson.M)
-			if !ok {
-				log.Printf("Closing watch due to error, unable to find key")
+			var dk bson.M
+			mdk, err := bson.Marshal(data["documentKey"])
+			if err != nil {
+				log.Printf("Closing watch due to error, while bson Marshal dock Key : %q", err)
 				return
 			}
 
-			bKey, ok := dk["_id"].(bson.M)
+			err = bson.Unmarshal(mdk, &dk)
+			if err != nil {
+				log.Printf("Closing watch due to error, while bson Unmarshal doc key : %q", err)
+				return
+			}
+
+			bKey, ok := dk["_id"].(bson.D)
 			if !ok {
 				log.Printf("Closing watch due to error, unable to find id")
 				return
@@ -347,9 +353,6 @@ func NewMongoClient(conf *MongoConfig) (StoreClient, error) {
 	}
 	uri := "mongodb://" + net.JoinHostPort(conf.Host, conf.Port)
 	clientOptions := options.Client()
-	// TODO(prabhjot) need to check if this monitor is relevant for us,
-	// keeping it asis for now, to be evaluated at later stage
-	clientOptions.Monitor = otelmongo.NewMonitor()
 	clientOptions.ApplyURI(uri)
 	clientOptions.SetAuth(options.Credential{
 		AuthMechanism: "SCRAM-SHA-256",
@@ -358,7 +361,7 @@ func NewMongoClient(conf *MongoConfig) (StoreClient, error) {
 		Password:      conf.Password,
 	})
 
-	client, err := mongo.Connect(context.Background(), clientOptions)
+	client, err := mongo.Connect(clientOptions)
 	if err != nil {
 		return nil, err
 	}

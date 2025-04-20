@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/Prabhjot-Sethi/core/db"
 	"github.com/Prabhjot-Sethi/core/errors"
-	"go.mongodb.org/mongo-driver/bson"
 )
 
 type MyKey struct {

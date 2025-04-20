@@ -66,6 +66,10 @@ func Test_LockBaseTesting(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to acquire lock: %s", err)
 	}
-	_ = lock1.Close()
-	_ = lock.Close()
+	if lock1 != nil {
+		_ = lock1.Close()
+	}
+	if lock != nil {
+		_ = lock.Close()
+	}
 }
