@@ -20,3 +20,12 @@ source ~/.bashrc
 
 # install golang lint cli
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.0.2
+
+# install protobuf compiler
+sudo apt install -y protobuf-compiler
+
+# install protoc-gen-go
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
+
+#install protoc-gen-go-grpc
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
