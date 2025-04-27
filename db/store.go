@@ -81,3 +81,11 @@ type StoreClient interface {
 	// considered healthy
 	HealthCheck(ctx context.Context) error
 }
+
+type StoreCollectionTable[K any, E any] struct {
+	Col StoreCollection
+}
+
+func (t *StoreCollectionTable[K, E]) Insert(ctx context.Context, key K, entry E) error {
+	return t.Col.InsertOne(ctx, key, entry)
+}
