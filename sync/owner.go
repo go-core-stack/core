@@ -126,6 +126,8 @@ func (t *ownerTableType) allocateOwner(name string) error {
 		return err
 	}
 
+	log.Printf("Registered Self as %s, in owner-table", t.key.Name)
+
 	// start a go routine to keep updating the Last Seen time
 	// periodically, ensuring that we keep the entry active and
 	// not letting it age out
