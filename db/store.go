@@ -82,10 +82,36 @@ type StoreClient interface {
 	HealthCheck(ctx context.Context) error
 }
 
+// Generic table type providing common functions types to specific
+// structures each table built using.
+// ensure performing sanity checks and ensuring common
+// functionality
 type StoreCollectionTable[K any, E any] struct {
 	Col StoreCollection
 }
 
+// Inserts a new entry to the table
 func (t *StoreCollectionTable[K, E]) Insert(ctx context.Context, key K, entry E) error {
 	return t.Col.InsertOne(ctx, key, entry)
+}
+
+// Locates an entry in the table, inserts if it doesn't exists
+// and updates the data if it already exists
+func (t *StoreCollectionTable[K, E]) Locate(ctx context.Context, key K, entry E) error {
+	return t.Col.UpdateOne(ctx, key, entry, true)
+}
+
+// Updates an existing entry
+func (t *StoreCollectionTable[K, E]) Update(ctx context.Context, key K, entry E) error {
+	return t.Col.UpdateOne(ctx, key, entry, false)
+}
+
+// Find an existing entry from the table
+func (t *StoreCollectionTable[K, E]) Find(ctx context.Context, key K, data E) error {
+	return t.Col.FindOne(ctx, key, data)
+}
+
+// Delete a specific key from the table
+func (t *StoreCollectionTable[K, E]) DeleteKey(ctx context.Context, key K) error {
+	return t.Col.DeleteOne(ctx, key)
 }
