@@ -19,6 +19,9 @@ import (
 )
 
 const (
+	// Store/Database name for the ownership table
+	ownerShipDatabase = "sync"
+
 	// collection name for sync ownership table
 	ownerShipCollection = "owner-table"
 
@@ -196,4 +199,15 @@ func InitializeOwnerWithUpdateInterval(ctx context.Context, store db.Store, name
 
 	// allocate owner entry context
 	return ownerTable.allocateOwner(name)
+}
+
+// Initialize the Sync Owner management constructs, anyone while working with
+// this library requires to use this function before actually start consuming
+// any functionality from here.
+// This function falls back to using the default database, ensuring common
+// definition for all the consuming processes to ensure synchronisation to work
+// in a seemless manner
+func InitializeOwnerTableDefault(ctx context.Context, client db.StoreClient, name string) error {
+	store := client.GetDataStore(ownerShipDatabase)
+	return InitializeOwnerWithUpdateInterval(ctx, store, name, defaultOwnerUpdateInterval)
 }
