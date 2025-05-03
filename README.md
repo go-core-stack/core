@@ -62,3 +62,8 @@ with a need to react on availability of first provider or unavailability of
 last provider to trigger certain logics, while moving from 1 provider to
 multiple are typically handled due to a load balancer capabilities provided
 by kubernetes or equivalent systems
+
+### SMTP Wrapper
+This is a wrapper over an above standard net/smtp providing client and other
+constructs to work with emails based triggers and communication over emails
+while device compatible smtp email account is provided
