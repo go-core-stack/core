@@ -42,6 +42,11 @@ func (t *Table[K, E]) Initialize(col db.StoreCollection) error {
 		return err
 	}
 
+	err = t.ManagerImpl.Initialize(context.Background(), t)
+	if err != nil {
+		return err
+	}
+
 	t.col = col
 	return nil
 }
