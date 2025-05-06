@@ -27,7 +27,7 @@ func (t *Table[K, E]) Initialize(col db.StoreCollection) error {
 		return errors.Wrapf(errors.AlreadyExists, "Table is already initialized")
 	}
 	var key [0]K
-	kType := reflect.TypeOf(key)
+	kType := reflect.TypeOf(key).Elem()
 	if kType.Kind() != reflect.Pointer {
 		kType = reflect.PointerTo(kType)
 	}
