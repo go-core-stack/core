@@ -27,5 +27,8 @@ sudo apt install -y protobuf-compiler
 # install protoc-gen-go
 go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
 
-#install protoc-gen-go-grpc
+# install protoc-gen-go-grpc
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+
+# install protoc-gen-grpc-gateway
+go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@v2.26.3
