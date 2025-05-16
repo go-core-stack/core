@@ -19,4 +19,10 @@ const (
 
 	// if the argument is not valid
 	InvalidArgument ErrCode = 3
+
+	// Unauthorized request error
+	Unauthorized ErrCode = 4
+
+	// Forbidden action error
+	Forbidden ErrCode = 5
 )
