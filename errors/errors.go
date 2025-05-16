@@ -74,3 +74,15 @@ func IsAlreadyExists(err error) bool {
 func IsInvalidArgument(err error) bool {
 	return GetErrCode(err) == InvalidArgument
 }
+
+// IsUnauthorized returns true if err
+// is due to Unauthorized request
+func IsUnauthorized(err error) bool {
+	return GetErrCode(err) == Unauthorized
+}
+
+// IsForbidden returns true if err
+// is due to Forbidden action
+func IsForbidden(err error) bool {
+	return GetErrCode(err) == Forbidden
+}
