@@ -27,7 +27,7 @@ type AuthInfo struct {
 // be used only by the entity that has performed that authentication
 // on the given http request already and has the relevant Auth Info
 // Context.
-func SetAuthInfoHeader(r http.Request, info *AuthInfo) error {
+func SetAuthInfoHeader(r *http.Request, info *AuthInfo) error {
 	b, err := json.Marshal(info)
 	if err != nil {
 		return errors.Wrapf(errors.InvalidArgument, "failed to generate user info: %s", err)
@@ -38,7 +38,7 @@ func SetAuthInfoHeader(r http.Request, info *AuthInfo) error {
 }
 
 // gets Auth Info Header available in the Http Request
-func GetAuthInfoHeader(r http.Request) (*AuthInfo, error) {
+func GetAuthInfoHeader(r *http.Request) (*AuthInfo, error) {
 	val := r.Header.Get(httpClientAuthContext)
 	if val == "" {
 		return nil, errors.Wrapf(errors.NotFound, "Auth info not available in the http request")
@@ -56,6 +56,6 @@ func GetAuthInfoHeader(r http.Request) (*AuthInfo, error) {
 }
 
 // delete the Auth info header from the given HTTP request
-func DeleteAuthInfoHeader(r http.Request) {
+func DeleteAuthInfoHeader(r *http.Request) {
 	r.Header.Del(httpClientAuthContext)
 }
