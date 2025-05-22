@@ -2,7 +2,14 @@ module github.com/Prabhjot-Sethi/core
 
 go 1.24
 
-require github.com/google/go-cmp v0.7.0 // indirect
+require google.golang.org/grpc v1.72.1
+
+require (
+	github.com/google/go-cmp v0.7.0 // indirect
+	golang.org/x/sys v0.30.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20250218202821-56aae31c358a // indirect
+	google.golang.org/protobuf v1.36.5 // indirect
+)
 
 require (
 	github.com/golang/snappy v1.0.0 // indirect
