@@ -41,13 +41,13 @@ func SetAuthInfoHeader(r *http.Request, info *AuthInfo) error {
 		return errors.Wrapf(errors.InvalidArgument, "failed to generate user info: %s", err)
 	}
 	val := base64.RawURLEncoding.EncodeToString(b)
-	r.Header.Set(httpClientAuthContext, val)
+	r.Header.Set(HttpClientAuthContext, val)
 	return nil
 }
 
 // gets Auth Info Header available in the Http Request
 func GetAuthInfoHeader(r *http.Request) (*AuthInfo, error) {
-	val := r.Header.Get(httpClientAuthContext)
+	val := r.Header.Get(HttpClientAuthContext)
 	if val == "" {
 		return nil, errors.Wrapf(errors.NotFound, "Auth info not available in the http request")
 	}
@@ -84,7 +84,7 @@ func extractHeader(ctx context.Context, header string) (string, error) {
 
 // Processes the headers available in context, to validate that the authentication is already performed
 func ProcessAuthInfo(ctx context.Context) (context.Context, error) {
-	val, err := extractHeader(ctx, httpClientAuthContext)
+	val, err := extractHeader(ctx, GrpcClientAuthContext)
 	if err != nil {
 		return ctx, errors.Wrapf(errors.Unauthorized, "failed to extract auth info header: %s", err)
 	}
@@ -118,5 +118,5 @@ func GetAuthInfoFromContext(ctx context.Context) (*AuthInfo, error) {
 
 // delete the Auth info header from the given HTTP request
 func DeleteAuthInfoHeader(r *http.Request) {
-	r.Header.Del(httpClientAuthContext)
+	r.Header.Del(HttpClientAuthContext)
 }

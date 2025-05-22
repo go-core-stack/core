@@ -21,8 +21,8 @@ func Test_ErrorValidations(t *testing.T) {
 		SessionID: "abc",
 	}
 	SetAuthInfoHeader(r, info)
-	fmt.Printf("Got - Encoded Auth Info: %s\n", r.Header[httpClientAuthContext][0])
-	if r.Header[httpClientAuthContext][0] != "eyJyZWFsbSI6InJvb3QiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJhZG1pbiIsImVtYWlsIjoiYWRtaW5AZXhhbXBsZS5jb20iLCJuYW1lIjoiVGVzdCBBZG1pbiIsInNpZCI6ImFiYyJ9" {
+	fmt.Printf("Got - Encoded Auth Info: %s\n", r.Header[HttpClientAuthContext][0])
+	if r.Header[HttpClientAuthContext][0] != "eyJyZWFsbSI6InJvb3QiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJhZG1pbiIsImVtYWlsIjoiYWRtaW5AZXhhbXBsZS5jb20iLCJuYW1lIjoiVGVzdCBBZG1pbiIsInNpZCI6ImFiYyJ9" {
 		t.Errorf("failed to set the auth info in the header, found invalid value in header")
 	}
 	found, err := GetAuthInfoHeader(r)

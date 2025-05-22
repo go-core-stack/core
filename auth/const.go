@@ -13,5 +13,8 @@ const (
 	// This is usually Added by Auth Gateway, if present it
 	// indicates that authentication is successfully performed
 	// by Auth Gateway.
-	httpClientAuthContext = "Auth-Info"
+	HttpClientAuthContext = "Auth-Info"
+
+	// grpc gateway will typically move the header to lowercase
+	GrpcClientAuthContext = "auth-info"
 )
