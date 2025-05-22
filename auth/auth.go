@@ -4,9 +4,14 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/Prabhjot-Sethi/core/errors"
 )
@@ -22,6 +27,9 @@ type AuthInfo struct {
 	FullName  string `json:"name,omitempty"`
 	SessionID string `json:"sid"`
 }
+
+// struct identifier for the context
+type authInfo struct{}
 
 // Sets Auth Info Header in the provided Http Request typically will
 // be used only by the entity that has performed that authentication
@@ -53,6 +61,59 @@ func GetAuthInfoHeader(r *http.Request) (*AuthInfo, error) {
 		return nil, errors.Wrapf(errors.InvalidArgument, "failed to get user info from header: %s", err)
 	}
 	return info, nil
+}
+
+// extract the header information from the GRPC context
+func extractHeader(ctx context.Context, header string) (string, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return "", status.Error(codes.NotFound, "No Metadata available in incoming message")
+	}
+
+	hValue, ok := md[header]
+	if !ok {
+		return "", status.Errorf(codes.NotFound, "missing header: %s", header)
+	}
+
+	if len(hValue) != 1 {
+		return "", status.Errorf(codes.NotFound, "no value associated with header: %s", header)
+	}
+
+	return hValue[0], nil
+}
+
+// Processes the headers available in context, to validate that the authentication is already performed
+func ProcessAuthInfo(ctx context.Context) (context.Context, error) {
+	val, err := extractHeader(ctx, httpClientAuthContext)
+	if err != nil {
+		return ctx, errors.Wrapf(errors.Unauthorized, "failed to extract auth info header: %s", err)
+	}
+
+	b, err := base64.RawURLEncoding.DecodeString(val)
+	if err != nil {
+		return ctx, errors.Wrapf(errors.Unauthorized, "invalid user info received: %s", err)
+	}
+
+	info := &AuthInfo{}
+	err = json.Unmarshal(b, info)
+	if err != nil {
+		return ctx, errors.Wrapf(errors.Unauthorized, "failed to get user info from header: %s", err)
+	}
+
+	// create new context with value of the auth info
+	authCtx := context.WithValue(ctx, authInfo{}, info)
+	return authCtx, nil
+}
+
+// gets Auth Info from Context available in the Http Request
+func GetAuthInfoFromContext(ctx context.Context) (*AuthInfo, error) {
+	val := ctx.Value(authInfo{})
+	switch info := val.(type) {
+	case *AuthInfo:
+		return info, nil
+	default:
+		return nil, errors.Wrapf(errors.NotFound, "auth info not found")
+	}
 }
 
 // delete the Auth info header from the given HTTP request
