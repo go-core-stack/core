@@ -9,9 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
 	"github.com/Prabhjot-Sethi/core/errors"
 )
@@ -67,16 +65,16 @@ func GetAuthInfoHeader(r *http.Request) (*AuthInfo, error) {
 func extractHeader(ctx context.Context, header string) (string, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return "", status.Error(codes.NotFound, "No Metadata available in incoming message")
+		return "", errors.Wrapf(errors.NotFound, "No Metadata available in incoming message")
 	}
 
 	hValue, ok := md[header]
 	if !ok {
-		return "", status.Errorf(codes.NotFound, "missing header: %s", header)
+		return "", errors.Wrapf(errors.NotFound, "missing header: %s", header)
 	}
 
 	if len(hValue) != 1 {
-		return "", status.Errorf(codes.NotFound, "no value associated with header: %s", header)
+		return "", errors.Wrapf(errors.NotFound, "no value associated with header: %s", header)
 	}
 
 	return hValue[0], nil
