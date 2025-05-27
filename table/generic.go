@@ -206,6 +206,16 @@ func (t *Table[K, E]) FindMany(ctx context.Context, filter any) ([]*E, error) {
 	return data, nil
 }
 
+// DeleteByFilter deletes entries matching the provided filter.
+// Returns number of entries deleted and error if any
+func (t *Table[K, E]) DeleteByFilter(ctx context.Context, filter any) (int64, error) {
+	if t.col == nil {
+		return 0, errors.Wrapf(errors.InvalidArgument, "Table not initialized")
+	}
+	return t.col.DeleteMany(ctx, filter)
+
+}
+
 // DeleteKey removes an entry by key from the table.
 // Returns an error if the table is not initialized or the delete fails.
 func (t *Table[K, E]) DeleteKey(ctx context.Context, key *K) error {
