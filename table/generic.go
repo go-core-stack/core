@@ -145,7 +145,7 @@ func (t *Table[K, E]) ReconcilerGetAllKeys() []any {
 		log.Panicf("got error while fetching all keys %s", err)
 	}
 	for _, k := range list {
-		keys = append(keys, k.Key)
+		keys = append(keys, &k.Key)
 	}
 	return []any(keys)
 }
