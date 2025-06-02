@@ -6,7 +6,7 @@ package sync
 import (
 	"sync"
 
-	"github.com/Prabhjot-Sethi/core/reconciler"
+	"github.com/go-core-stack/core/reconciler"
 )
 
 type observerCountKey struct {

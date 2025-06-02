@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Prabhjot-Sethi/core/db"
-	"github.com/Prabhjot-Sethi/core/errors"
-	"github.com/Prabhjot-Sethi/core/reconciler"
+	"github.com/go-core-stack/core/db"
+	"github.com/go-core-stack/core/errors"
+	"github.com/go-core-stack/core/reconciler"
 )
 
 type MyObserver struct {

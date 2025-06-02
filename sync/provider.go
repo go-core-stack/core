@@ -13,9 +13,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
-	"github.com/Prabhjot-Sethi/core/db"
-	"github.com/Prabhjot-Sethi/core/errors"
-	"github.com/Prabhjot-Sethi/core/reconciler"
+	"github.com/go-core-stack/core/db"
+	"github.com/go-core-stack/core/errors"
+	"github.com/go-core-stack/core/reconciler"
 )
 
 const (
