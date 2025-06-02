@@ -11,7 +11,7 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
-	"github.com/Prabhjot-Sethi/core/errors"
+	"github.com/go-core-stack/core/errors"
 )
 
 // Auth construct obtained as part of the auth action being performed

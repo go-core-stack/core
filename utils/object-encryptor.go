@@ -13,7 +13,7 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/Prabhjot-Sethi/core/errors"
+	"github.com/go-core-stack/core/errors"
 )
 
 var nonce = []byte("core nonce")

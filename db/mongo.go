@@ -17,7 +17,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
-	"github.com/Prabhjot-Sethi/core/errors"
+	"github.com/go-core-stack/core/errors"
 )
 
 type mongoCollection struct {

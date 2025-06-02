@@ -8,9 +8,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/Prabhjot-Sethi/core/db"
-	"github.com/Prabhjot-Sethi/core/errors"
-	"github.com/Prabhjot-Sethi/core/sync"
+	"github.com/go-core-stack/core/db"
+	"github.com/go-core-stack/core/errors"
+	"github.com/go-core-stack/core/sync"
 )
 
 func main() {

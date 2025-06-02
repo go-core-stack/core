@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Prabhjot-Sethi/core/db"
-	"github.com/Prabhjot-Sethi/core/errors"
+	"github.com/go-core-stack/core/db"
+	"github.com/go-core-stack/core/errors"
 )
 
 func Test_OwnerInit(t *testing.T) {

@@ -1,4 +1,4 @@
-module github.com/Prabhjot-Sethi/core
+module github.com/go-core-stack/core
 
 go 1.24
 

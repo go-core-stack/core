@@ -7,8 +7,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Prabhjot-Sethi/core/db"
-	"github.com/Prabhjot-Sethi/core/errors"
+	"github.com/go-core-stack/core/db"
+	"github.com/go-core-stack/core/errors"
 )
 
 type lockKey struct {
