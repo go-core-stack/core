@@ -23,6 +23,14 @@ type Config struct {
 	// Sender email address / username for authentication
 	Sender string
 
+	// Sender Descriptive Name to be included in the email
+	SenderName string
+
+	// reply-to email address as typically sender email would
+	// be device control and typically would be no-reply,
+	// if empty means reply-to is not configured
+	ReplyTo string
+
 	// Password for authenticating the sender with smtp server
 	Password string
 }
@@ -69,7 +77,29 @@ func (c *Client) Send(m *Message) error {
 		mime = "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
 	}
 
-	message := fmt.Appendf(nil, "Subject: %s\n%s%s", m.Subject, mime, m.Body)
+	var header string
+	if c.config.SenderName != "" {
+		// If sender name is provided, use it in the From header.
+		header = fmt.Sprintf("From: %s <%s>\r\n", c.config.SenderName, c.config.Sender)
+	} else {
+		// If sender name is not provided, use only the email address.
+		header = fmt.Sprintf("From: <%s>\r\n", c.config.Sender)
+	}
+
+	if c.config.ReplyTo != "" {
+		// If reply-to is configured, add it to the headers.
+		header += fmt.Sprintf("Reply-To: %s\r\n", c.config.ReplyTo)
+	}
+
+	if len(m.Receivers) > 0 {
+		header += fmt.Sprintf("To: %s", m.Receivers[0])
+		for _, receiver := range m.Receivers[1:] {
+			header += fmt.Sprintf(", %s", receiver)
+		}
+		header += "\r\n"
+	}
+
+	message := fmt.Appendf(nil, "%sSubject: %s\n%s%s", header, m.Subject, mime, m.Body)
 	// Sending email.
 	err := smtp.SendMail(c.endpoint, auth, c.config.Sender, m.Receivers, message)
 	if err != nil {
