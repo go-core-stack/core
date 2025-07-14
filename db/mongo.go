@@ -16,8 +16,10 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 
 	"github.com/go-core-stack/core/errors"
+	"github.com/go-core-stack/core/utils"
 )
 
 type mongoCollection struct {
@@ -374,6 +376,16 @@ func NewMongoClient(conf *MongoConfig) (StoreClient, error) {
 		Username:      conf.Username,
 		Password:      conf.Password,
 	})
+
+	// by default ensure majority write concern and journal to be true
+	// for HA to function appropriately
+	//
+	// while sync package might require a better consistency than just
+	// majority, so we need to carefully evaluate right configuration
+	// for the same
+	wc := writeconcern.Majority()
+	wc.Journal = utils.BoolP(true)
+	clientOptions.SetWriteConcern(wc)
 
 	client, err := mongo.Connect(clientOptions)
 	if err != nil {
