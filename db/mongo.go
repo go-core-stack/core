@@ -329,19 +329,26 @@ type mongoClient struct {
 type MongoConfig struct {
 	Host     string
 	Port     string
+	Uri      string
 	Username string
 	Password string
 }
 
 func (c *MongoConfig) validate() error {
-	if c.Host == "" {
-		c.Host = "localhost"
-	}
-	if c.Port == "" || c.Port == "0" {
-		c.Port = "27017"
+	if c.Uri != "" {
+		if c.Host != "" || c.Port != "" {
+			return errors.Wrap(errors.InvalidArgument, "cannot provide host and port if uri is configured")
+		}
 	} else {
-		if _, err := strconv.Atoi(c.Port); err != nil {
-			return errors.Wrap(errors.InvalidArgument, "invalid database port")
+		if c.Host == "" {
+			c.Host = "localhost"
+		}
+		if c.Port == "" || c.Port == "0" {
+			c.Port = "27017"
+		} else {
+			if _, err := strconv.Atoi(c.Port); err != nil {
+				return errors.Wrap(errors.InvalidArgument, "invalid database port")
+			}
 		}
 	}
 	return nil
@@ -351,7 +358,14 @@ func NewMongoClient(conf *MongoConfig) (StoreClient, error) {
 	if err := conf.validate(); err != nil {
 		return nil, err
 	}
-	uri := "mongodb://" + net.JoinHostPort(conf.Host, conf.Port)
+	// TODO(prabhjot) better to enventually switch to just uri
+	// instead of allowing host port configuration
+	var uri string
+	if conf.Uri != "" {
+		uri = conf.Uri
+	} else {
+		uri = "mongodb://" + net.JoinHostPort(conf.Host, conf.Port)
+	}
 	clientOptions := options.Client()
 	clientOptions.ApplyURI(uri)
 	clientOptions.SetAuth(options.Credential{
