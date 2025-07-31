@@ -7,6 +7,7 @@ import (
 	"context"
 	"log"
 	"reflect"
+	"sync"
 
 	"github.com/go-core-stack/core/db"
 	"github.com/go-core-stack/core/errors"
@@ -25,8 +26,9 @@ import (
 // E: Entry type (must NOT be a pointer type)
 type CachedTable[K comparable, E any] struct {
 	reconciler.ManagerImpl
-	cache map[K]*E
-	col   db.StoreCollection
+	cacheMu sync.RWMutex
+	cache   map[K]*E
+	col     db.StoreCollection
 }
 
 // Initialize sets up the Table with the provided db.StoreCollection.
@@ -38,6 +40,10 @@ type CachedTable[K comparable, E any] struct {
 func (t *CachedTable[K, E]) Initialize(col db.StoreCollection) error {
 	if t.col != nil {
 		return errors.Wrapf(errors.AlreadyExists, "Table is already initialized")
+	}
+
+	if t.cache == nil {
+		t.cache = map[K]*E{}
 	}
 
 	var e E
@@ -68,7 +74,27 @@ func (t *CachedTable[K, E]) Initialize(col db.StoreCollection) error {
 	}
 
 	t.col = col
-	t.cache = map[K]*E{}
+
+	list := []keyOnly[K]{}
+	err = t.col.FindMany(context.Background(), nil, &list)
+	if err != nil {
+		log.Panicf("got error while fetching all keys %s", err)
+	}
+	for _, k := range list {
+		entry, err := t.DBFind(context.Background(), &k.Key)
+		if err != nil {
+			// this should not happen in regular scenarios
+			// log and return from here
+			log.Printf("failed to find an entry, got error: %s", err)
+		} else {
+			func() {
+				t.cacheMu.Lock()
+				defer t.cacheMu.Unlock()
+				t.cache[k.Key] = entry
+			}()
+		}
+	}
+
 	return nil
 }
 
@@ -88,7 +114,11 @@ func (t *CachedTable[K, E]) callback(op string, wKey any) {
 				log.Printf("failed to find an entry, got error: %s", err)
 			}
 		} else {
-			t.cache[*key] = entry
+			func() {
+				t.cacheMu.Lock()
+				defer t.cacheMu.Unlock()
+				t.cache[*key] = entry
+			}()
 		}
 	}
 	t.NotifyCallback(wKey)
@@ -139,6 +169,8 @@ func (t *CachedTable[K, E]) Update(ctx context.Context, key *K, entry *E) error 
 // Find retrieves an entry by key from the Cache
 // Returns the entry and error if not found or if the table is not initialized.
 func (t *CachedTable[K, E]) Find(ctx context.Context, key *K) (*E, error) {
+	t.cacheMu.RLock()
+	defer t.cacheMu.RUnlock()
 	entry, ok := t.cache[*key]
 	if !ok {
 		return nil, errors.Wrapf(errors.NotFound, "failed to find entry with key %v", key)

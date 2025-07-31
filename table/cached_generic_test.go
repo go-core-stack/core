@@ -32,6 +32,8 @@ type MyTable struct {
 
 var (
 	myTable *MyTable
+
+	myTable2 *MyTable
 )
 
 func clientInit() {
@@ -63,6 +65,40 @@ func clientInit() {
 	col := s.GetCollection("my-cached-table")
 
 	err = myTable.Initialize(col)
+	if err != nil {
+		log.Panicf("failed to initialize cached table")
+	}
+}
+
+func clientInitTable2() {
+	if myTable2 != nil {
+		return
+	}
+	myTable2 = &MyTable{}
+
+	config := &db.MongoConfig{
+		Host:     "localhost",
+		Port:     "27017",
+		Username: "root",
+		Password: "password",
+	}
+
+	client, err := db.NewMongoClient(config)
+
+	if err != nil {
+		log.Panicf("failed to connect to mongo DB Error: %s", err)
+	}
+
+	err = client.HealthCheck(context.Background())
+	if err != nil {
+		log.Panicf("failed to perform Health check with DB Error: %s", err)
+	}
+
+	s := client.GetDataStore("test")
+
+	col := s.GetCollection("my-cached-table")
+
+	err = myTable2.Initialize(col)
 	if err != nil {
 		log.Panicf("failed to initialize cached table")
 	}
@@ -124,6 +160,17 @@ func Test_CachedClient(t *testing.T) {
 		}
 
 		entry, err = myTable.Find(ctx, key2)
+		if err != nil {
+			t.Errorf("failed to find the inserted entry from the table, got error: %s", err)
+		} else {
+			if entry.Desc != "sample-description-2" {
+				t.Errorf("expected sample-description-2, but got %s", entry.Desc)
+			}
+		}
+
+		clientInitTable2()
+		time.Sleep(1 * time.Second)
+		entry, err = myTable2.Find(ctx, key2)
 		if err != nil {
 			t.Errorf("failed to find the inserted entry from the table, got error: %s", err)
 		} else {
