@@ -8,6 +8,8 @@ import (
 	"log"
 	"reflect"
 
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
 	"github.com/go-core-stack/core/db"
 	"github.com/go-core-stack/core/errors"
 	"github.com/go-core-stack/core/reconciler"
@@ -193,12 +195,13 @@ func (t *Table[K, E]) Find(ctx context.Context, key *K) (*E, error) {
 
 // FindMany retrieves multiple entries matching the provided filter.
 // Returns a slice of entries and error if none found or if the table is not initialized.
-func (t *Table[K, E]) FindMany(ctx context.Context, filter any) ([]*E, error) {
+func (t *Table[K, E]) FindMany(ctx context.Context, filter any, offset, limit int32) ([]*E, error) {
 	if t.col == nil {
 		return nil, errors.Wrapf(errors.InvalidArgument, "Table not initialized")
 	}
 	var data []*E
-	err := t.col.FindMany(ctx, filter, &data)
+	opts := options.Find().SetLimit(int64(limit)).SetSkip(int64(offset))
+	err := t.col.FindMany(ctx, filter, &data, opts)
 	if err != nil {
 		return nil, errors.Wrapf(errors.NotFound, "failed to find any entry: %s", err)
 	}

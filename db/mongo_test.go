@@ -5,12 +5,14 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type MyKey struct {
@@ -101,6 +103,103 @@ func Test_ClientConnection(t *testing.T) {
 		}
 
 		err = col.DeleteOne(context.Background(), key)
+		if err != nil {
+			t.Errorf("failed to delete entry using key Error: %s", err)
+		}
+	})
+
+	t.Run("Find_many_with_offset_limits", func(t *testing.T) {
+		config := &MongoConfig{
+			Host:     "localhost",
+			Port:     "27017",
+			Username: "root",
+			Password: "password",
+		}
+
+		client, err := NewMongoClient(config)
+
+		if err != nil {
+			t.Errorf("failed to connect to mongo DB Error: %s", err)
+			return
+		}
+
+		s := client.GetDataStore("test")
+
+		col := s.GetCollection("collection1")
+
+		key := &MyKey{
+			Name: "test-key",
+		}
+		data := &MyData{
+			Desc: "sample-description",
+			Val: &InternaData{
+				Test: "abc",
+			},
+		}
+
+		key1 := &MyKey{
+			Name: "test-key-1",
+		}
+
+		key2 := &MyKey{
+			Name: "test-key-2",
+		}
+
+		err = col.InsertOne(context.Background(), key, data)
+		if err != nil {
+			t.Errorf("failed to insert an entry to collection Error: %s", err)
+		}
+
+		err = col.InsertOne(context.Background(), key1, data)
+		if err != nil {
+			t.Errorf("failed to insert an entry to collection Error: %s", err)
+		}
+
+		err = col.InsertOne(context.Background(), key2, data)
+		if err != nil {
+			t.Errorf("failed to insert an entry to collection Error: %s", err)
+		}
+
+		val := &MyData{}
+		err = col.FindOne(context.Background(), key2, val)
+		if err != nil {
+			t.Errorf("failed to find the entry Error: %s", err)
+		}
+		fmt.Printf("found entry :%v", *val)
+
+		list := []*MyData{}
+		opts := options.Find().SetLimit(2).SetSkip(2)
+		err = col.FindMany(context.Background(), nil, &list, opts)
+		if err != nil {
+			t.Errorf("failed to find the entry Error: %s", err)
+		}
+
+		if len(list) != 1 {
+			t.Errorf("Expected 1 entries in table but got %d", len(list))
+		}
+
+		list = []*MyData{}
+		opts = options.Find().SetLimit(2).SetSkip(0)
+		err = col.FindMany(context.Background(), nil, &list, opts)
+		if err != nil {
+			t.Errorf("failed to find the entry Error: %s", err)
+		}
+
+		if len(list) != 2 {
+			t.Errorf("Expected 2 entries in table but got %d", len(list))
+		}
+
+		err = col.DeleteOne(context.Background(), key)
+		if err != nil {
+			t.Errorf("failed to delete entry using key Error: %s", err)
+		}
+
+		err = col.DeleteOne(context.Background(), key1)
+		if err != nil {
+			t.Errorf("failed to delete entry using key Error: %s", err)
+		}
+
+		err = col.DeleteOne(context.Background(), key2)
 		if err != nil {
 			t.Errorf("failed to delete entry using key Error: %s", err)
 		}
