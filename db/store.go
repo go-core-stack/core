@@ -39,7 +39,7 @@ type StoreCollection interface {
 
 	// Find multiple entries from the store collection for the given filter, where the data
 	// value is returned as a list based on the object type passed to it
-	FindMany(ctx context.Context, filter any, data any) error
+	FindMany(ctx context.Context, filter any, data any, opts ...any) error
 
 	// Return count of entries matching the provided filter
 	Count(ctx context.Context, filter any) (int64, error)

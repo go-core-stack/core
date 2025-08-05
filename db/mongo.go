@@ -151,11 +151,19 @@ func (c *mongoCollection) FindOne(ctx context.Context, key any, data any) error 
 
 // Find multiple entries from the store collection for the given filter, where the data
 // value is returned as a list based on the object type passed to it
-func (c *mongoCollection) FindMany(ctx context.Context, filter any, data any) error {
+func (c *mongoCollection) FindMany(ctx context.Context, filter any, data any, opts ...any) error {
 	if filter == nil {
 		filter = bson.D{}
 	}
-	cursor, err := c.col.Find(ctx, filter)
+	var findOpts []options.Lister[options.FindOptions]
+	for _, opt := range opts {
+		val, ok := opt.(options.Lister[options.FindOptions])
+		if !ok {
+			return errors.Wrapf(errors.InvalidArgument, "Invalid option type %T passed to FindMany", opt)
+		}
+		findOpts = append(findOpts, val)
+	}
+	cursor, err := c.col.Find(ctx, filter, findOpts...)
 	if err != nil {
 		return interpretMongoError(err)
 	}
