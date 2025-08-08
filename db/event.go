@@ -40,7 +40,7 @@ func (e *Event[K, E]) LogEvent() {
 	if e.Ns != nil {
 		msg += fmt.Sprintf("Coll=%s:%s, ", e.Ns.Database, e.Ns.Collection)
 	}
-	msg = fmt.Sprintf("Key=%v, Op=%s, Time=%v", e.Doc.Key, e.Op, e.Time)
+	msg += fmt.Sprintf("Key=%v, Op=%s, Time=%v", e.Doc.Key, e.Op, e.Time)
 	if e.Entry != nil {
 		msg += fmt.Sprintf(", Entry= %v", *e.Entry)
 	}
