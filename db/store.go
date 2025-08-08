@@ -9,6 +9,8 @@ package db
 import (
 	"context"
 	"reflect"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // WatchCallbackfn responsible for
@@ -57,6 +59,8 @@ type StoreCollection interface {
 	// function to receive only conditional notifications of the events
 	// listener is interested about
 	Watch(ctx context.Context, filter any, cb WatchCallbackfn) error
+
+	startEventLogger(ctx context.Context, eventType reflect.Type, timestamp *bson.Timestamp) error
 }
 
 // interface definition for a store, responsible for holding group

@@ -315,6 +315,82 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 	return nil
 }
 
+// startEventLogger starts the event logger for the collection and trigger logger for events
+func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflect.Type, timestamp *bson.Timestamp) error {
+	// TODO(prabhjot) if we may need to enable pre and post images for change streams
+	// to get the full document before and after the change, probably not needed
+	// as of now, as the continuity or sequence of the events will anyway provide
+	// the complete context of the change to the object
+	/*
+		func() {
+			// Enable pre-images on the collection
+			cmd := bson.D{
+				{Key: "collMod", Value: c.colName},
+				{Key: "changeStreamPreAndPostImages", Value: bson.D{
+					{Key: "enabled", Value: true},
+				}},
+			}
+
+			var result bson.M
+			if err := c.col.Database().RunCommand(ctx, cmd).Decode(&result); err != nil {
+				log.Fatalf("Failed to enable pre-images: %v", err)
+			}
+		}()
+	*/
+
+	opts := options.ChangeStream()
+	opts.SetFullDocumentBeforeChange(options.WhenAvailable)
+	opts.SetFullDocument(options.WhenAvailable)
+
+	if timestamp != nil {
+		opts.SetStartAtOperationTime(timestamp)
+	}
+
+	// start watching on the collection with required context
+	stream, err := c.col.Watch(ctx, mongo.Pipeline{}, opts)
+	if err != nil {
+		return err
+	}
+
+	// run the loop on stream in a separate go routine
+	// allowing the watch starter to resume control and work with
+	// managing Watch stream by virtue of passed context
+	go func() {
+		// ensure closing of the open stream in case of returning from here
+		// keeping the handles and stack clean
+		// Note: this may not be required, if loop doesn't require it
+		// but still it is safe to keep ensuring appropriate cleanup
+		defer func() {
+			// ignore the error returned by stream close as of now
+			_ = stream.Close(context.Background())
+		}()
+		defer func() {
+			if !errors.Is(ctx.Err(), context.Canceled) {
+				// panic if the return from this function is not
+				// due to context being canceled
+				log.Panicf("End of stream observed due to error %s", stream.Err())
+			}
+		}()
+		for stream.Next(ctx) {
+			event := reflect.New(eventType)
+
+			if err := stream.Decode(event.Interface()); err != nil {
+				log.Printf("Closing watch due to decoding error %s", err)
+				return
+			}
+
+			method := event.MethodByName("LogEvent")
+			if !method.IsValid() {
+				log.Println("Invalid Log Events method, skipping event logging")
+			} else {
+				method.Call([]reflect.Value{})
+			}
+		}
+	}()
+
+	return nil
+}
+
 type mongoStore struct {
 	Store
 	db *mongo.Database
