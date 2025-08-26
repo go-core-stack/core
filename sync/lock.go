@@ -18,11 +18,16 @@ import (
 
 var (
 	// map for holding initialized lock tables
-	lockTables map[string]*LockTable = make(map[string]*LockTable)
+	lockTables map[lockTableKey]*LockTable = make(map[lockTableKey]*LockTable)
 
 	// mutex for securing lockTable Map
 	muLockTables sync.Mutex
 )
+
+type lockTableKey struct {
+	DbName  string
+	ColName string
+}
 
 type Lock interface {
 	Close() error
@@ -127,7 +132,7 @@ func LocateLockTable(store db.Store, name string) (*LockTable, error) {
 	muLockTables.Lock()
 	defer muLockTables.Unlock()
 
-	table, ok := lockTables[name]
+	table, ok := lockTables[lockTableKey{store.Name(), name}]
 	if !ok {
 		// ensure owner table is initialized before proceeding further
 		if ownerTable == nil {
@@ -170,7 +175,7 @@ func LocateLockTable(store db.Store, name string) (*LockTable, error) {
 			return nil, err
 		}
 
-		lockTables[name] = table
+		lockTables[lockTableKey{store.Name(), name}] = table
 	}
 
 	return table, nil
