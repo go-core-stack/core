@@ -407,6 +407,10 @@ func (s *mongoStore) GetCollection(name string) StoreCollection {
 	return c
 }
 
+func (s *mongoStore) Name() string {
+	return s.db.Name()
+}
+
 type mongoClient struct {
 	StoreClient
 	client *mongo.Client

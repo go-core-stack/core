@@ -68,6 +68,9 @@ type StoreCollection interface {
 type Store interface {
 	// Gets collection corresponding to the collection name
 	GetCollection(col string) StoreCollection
+
+	// Gets Name of the database corresponding to the store
+	Name() string
 }
 
 // interface definition for Client corresponding to a store and
