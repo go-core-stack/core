@@ -18,7 +18,7 @@ import (
 
 var (
 	// map for holding initialized lock tables
-	lockTables map[lockTableKey]*LockTable = make(map[lockTableKey]*LockTable)
+	lockTables map[lockTableKey]interface{} = make(map[lockTableKey]interface{})
 
 	// mutex for securing lockTable Map
 	muLockTables sync.Mutex
@@ -33,12 +33,12 @@ type Lock interface {
 	Close() error
 }
 
-type lockImpl struct {
-	key interface{}
-	tbl *LockTable
+type lockImpl[K any] struct {
+	key *K
+	tbl *LockTable[K]
 }
 
-func (l *lockImpl) Close() error {
+func (l *lockImpl[K]) Close() error {
 	return l.tbl.col.DeleteOne(context.Background(), l.key)
 }
 
@@ -47,7 +47,7 @@ type lockData struct {
 	Owner      string `bson:"owner,omitempty"`
 }
 
-type LockTable struct {
+type LockTable[K any] struct {
 	// collection name hosting locks for the table
 	colName string
 
@@ -61,7 +61,7 @@ type LockTable struct {
 	cancelFn context.CancelFunc
 }
 
-func (t *LockTable) Callback(op string, wKey interface{}) {
+func (t *LockTable[K]) Callback(op string, wKey interface{}) {
 	// handle callback as and when needed
 	// we may need notification of release of locks
 	// allowing others to start working on it
@@ -93,7 +93,7 @@ func (t *LockTable) Callback(op string, wKey interface{}) {
 	}
 }
 
-func (t *LockTable) handleOwnerRelease(op string, wKey interface{}) {
+func (t *LockTable[K]) handleOwnerRelease(op string, wKey interface{}) {
 	key := wKey.(*ownerKey)
 
 	filter := bson.D{{
@@ -106,7 +106,7 @@ func (t *LockTable) handleOwnerRelease(op string, wKey interface{}) {
 	}
 }
 
-func (t *LockTable) TryAcquire(ctx context.Context, key interface{}) (Lock, error) {
+func (t *LockTable[K]) TryAcquire(ctx context.Context, key *K) (Lock, error) {
 	// if ownertable is not initialized, then lock infra cannot be used
 	if ownerTable == nil || ownerTable.key == nil {
 		return nil, errors.Wrap(errors.InvalidArgument, "owner infra for lock is not initialized")
@@ -122,17 +122,19 @@ func (t *LockTable) TryAcquire(ctx context.Context, key interface{}) (Lock, erro
 		return nil, err
 	}
 
-	return &lockImpl{
+	return &lockImpl[K]{
 		key: key,
 		tbl: t,
 	}, nil
 }
 
-func LocateLockTable(store db.Store, name string) (*LockTable, error) {
+// LocateLockTable
+func LocateLockTable[K any](store db.Store, name string) (*LockTable[K], error) {
 	muLockTables.Lock()
 	defer muLockTables.Unlock()
 
-	table, ok := lockTables[lockTableKey{store.Name(), name}]
+	var table *LockTable[K]
+	intf, ok := lockTables[lockTableKey{store.Name(), name}]
 	if !ok {
 		// ensure owner table is initialized before proceeding further
 		if ownerTable == nil {
@@ -143,7 +145,7 @@ func LocateLockTable(store db.Store, name string) (*LockTable, error) {
 
 		// no existing table found, allocate a new one
 		col := store.GetCollection(name)
-		table = &LockTable{
+		table = &LockTable[K]{
 			colName:  name,
 			col:      col,
 			ctx:      ctx,
@@ -176,6 +178,11 @@ func LocateLockTable(store db.Store, name string) (*LockTable, error) {
 		}
 
 		lockTables[lockTableKey{store.Name(), name}] = table
+	} else {
+		table, ok = intf.(*LockTable[K])
+		if !ok {
+			return nil, errors.Wrapf(errors.AlreadyExists, "Table name %s, is already in use", name)
+		}
 	}
 
 	return table, nil

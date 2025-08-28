@@ -38,7 +38,7 @@ func Test_LockBaseTesting(t *testing.T) {
 		t.Errorf("Got error while initializing lock owner %s", err)
 	}
 
-	tbl, err := LocateLockTable(s, "demo-test")
+	tbl, err := LocateLockTable[lockKey](s, "demo-test")
 
 	if err != nil {
 		t.Errorf("failed to locate Lock Table: %s", err)
@@ -71,5 +71,34 @@ func Test_LockBaseTesting(t *testing.T) {
 	}
 	if lock != nil {
 		_ = lock.Close()
+	}
+}
+
+func Test_LockDuplicatedTable(t *testing.T) {
+	config := &db.MongoConfig{
+		Host:     "localhost",
+		Port:     "27017",
+		Username: "root",
+		Password: "password",
+	}
+
+	client, err := db.NewMongoClient(config)
+
+	if err != nil {
+		t.Errorf("failed to connect to mongo DB Error: %s", err)
+		return
+	}
+
+	s := client.GetDataStore("test-sync")
+
+	err = InitializeOwner(context.Background(), s, "test-owner")
+	if err != nil && !errors.IsAlreadyExists(err) {
+		t.Errorf("Got error while initializing lock owner %s", err)
+	}
+
+	_, err = LocateLockTable[interface{}](s, "demo-test")
+
+	if err == nil || !errors.IsAlreadyExists(err) {
+		t.Errorf("Should have received an error while locating Lock Table")
 	}
 }
