@@ -15,3 +15,7 @@ __debug_bin
 # we are designating .bk extension for backup files
 # ignore the same
 *.bk
+
+
+# ignore gocache in the repo
+.gocache
