@@ -8,18 +8,18 @@ package utils
 //
 //	ptr := utils.Pointer(42) // *int pointing to 42
 //	ptr := utils.Pointer("hello") // *string pointing to "hello"
-func Pointer[T any](val T) *T {
-	return &val
+func Pointer[T any](v T) *T {
+	return &v
 }
 
 // Dereference returns the value of a pointer, or the zero value if the pointer is nil.
 // Usage:
 //
 //	val := utils.Dereference(ptr) // returns value pointed by ptr, or zero value if ptr is nil
-func Dereference[T any](ptr *T) T {
+func Dereference[T any](p *T) T {
 	var val T
-	if ptr != nil {
-		val = *ptr
+	if p != nil {
+		val = *p
 	}
 	return val
 }
