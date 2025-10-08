@@ -272,6 +272,22 @@ func TestPointerDereferenceRoundTrip(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "struct-nested",
+			test: func(t *testing.T) {
+				val := struct {
+					A int
+					B *struct {
+						C string
+					}
+				}{A: 42, B: &struct{ C string }{C: "Foo"}}
+				ptr := Pointer(val)
+				result := Dereference(ptr)
+				if result != val {
+					t.Errorf("round trip failed: got %v, want %v", result, val)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
