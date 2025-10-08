@@ -472,7 +472,7 @@ func NewMongoClient(conf *MongoConfig) (StoreClient, error) {
 	// majority, so we need to carefully evaluate right configuration
 	// for the same
 	wc := writeconcern.Majority()
-	wc.Journal = utils.BoolP(true)
+	wc.Journal = utils.Pointer(true)
 	clientOptions.SetWriteConcern(wc)
 
 	client, err := mongo.Connect(clientOptions)
