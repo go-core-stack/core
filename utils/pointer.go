@@ -3,6 +3,28 @@
 
 package utils
 
+// Pointer returns a pointer to the given value.
+// Usage:
+//
+//	ptr := utils.Pointer(42) // *int pointing to 42
+//	ptr := utils.Pointer("hello") // *string pointing to "hello"
+func Pointer[T any](v T) *T {
+	return &v
+}
+
+// Dereference returns the value of a pointer, or the zero value if the pointer is nil.
+// Usage:
+//
+//	val := utils.Dereference(ptr) // returns value pointed by ptr, or zero value if ptr is nil
+func Dereference[T any](p *T) T {
+	var val T
+	if p != nil {
+		val = *p
+	}
+	return val
+}
+
+// Deprecated: Use Pointer instead.
 // BoolP returns a pointer to the given bool value.
 // Usage:
 //
@@ -11,6 +33,7 @@ func BoolP(val bool) *bool {
 	return &val
 }
 
+// Deprecated: Use Dereference instead.
 // PBool returns the value of a *bool pointer, or false if the pointer is nil.
 // Usage:
 //
@@ -23,6 +46,7 @@ func PBool(ptr *bool) bool {
 	return val
 }
 
+// Deprecated: Use Pointer instead.
 // StringP returns a pointer to the given string value.
 // Usage:
 //
@@ -31,6 +55,7 @@ func StringP(val string) *string {
 	return &val
 }
 
+// Deprecated: Use Dereference instead.
 // PString returns the value of a *string pointer, or "" if the pointer is nil.
 // Usage:
 //
@@ -43,6 +68,7 @@ func PString(ptr *string) string {
 	return val
 }
 
+// Deprecated: Use Pointer instead.
 // IntP returns a pointer to the given int value.
 // Usage:
 //
@@ -51,6 +77,7 @@ func IntP(val int) *int {
 	return &val
 }
 
+// Deprecated: Use Dereference instead.
 // PInt returns the value of a *int pointer, or 0 if the pointer is nil.
 // Usage:
 //
@@ -63,6 +90,7 @@ func PInt(ptr *int) int {
 	return val
 }
 
+// Deprecated: Use Pointer instead.
 // Int32P returns a pointer to the given int32 value.
 // Usage:
 //
@@ -71,6 +99,7 @@ func Int32P(val int32) *int32 {
 	return &val
 }
 
+// Deprecated: Use Dereference instead.
 // PInt32 returns the value of a *int32 pointer, or 0 if the pointer is nil.
 // Usage:
 //
@@ -83,6 +112,7 @@ func PInt32(ptr *int32) int32 {
 	return val
 }
 
+// Deprecated: Use Pointer instead.
 // Int64P returns a pointer to the given int64 value.
 // Usage:
 //
@@ -91,6 +121,7 @@ func Int64P(val int64) *int64 {
 	return &val
 }
 
+// Deprecated: Use Dereference instead.
 // PInt64 returns the value of a *int64 pointer, or 0 if the pointer is nil.
 // Usage:
 //
