@@ -19,6 +19,16 @@ type Limiter struct {
 	mu      sync.Mutex
 }
 
+func (l *Limiter) configure(newRate, newBurst int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.rate = newRate
+	l.burst = newBurst
+	l.limiter.SetLimit(rate.Limit(newRate))
+	l.limiter.SetBurst(int(newBurst))
+}
+
 // SetInUse increments or decrements the active usage counter and notifies the
 // LimitManager when the limiter transitions between idle and active states.
 func (l *Limiter) SetInUse(use bool) {

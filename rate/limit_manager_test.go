@@ -109,3 +109,86 @@ func TestLimitManagerSingleLimiterRelease(t *testing.T) {
 		t.Fatalf("expected limiter to reset to base rate after release: got %v want %v", got, rate.Limit(l.rate))
 	}
 }
+
+func TestLimitManagerEnsureLimiterUpdatesExisting(t *testing.T) {
+	mgr := NewLimitManager(100)
+
+	alpha, err := mgr.NewLimiter("alpha", 30, 10)
+	if err != nil {
+		t.Fatalf("unexpected error creating limiter alpha: %v", err)
+	}
+
+	if _, err := mgr.EnsureLimiter("alpha", 20, 8); err != nil {
+		t.Fatalf("EnsureLimiter update failed: %v", err)
+	}
+	if alpha.rate != 20 {
+		t.Fatalf("expected alpha rate to update to 20, got %d", alpha.rate)
+	}
+	if got := alpha.limiter.Limit(); got != rate.Limit(20) {
+		t.Fatalf("expected alpha limiter limit 20, got %v", got)
+	}
+
+	beta, err := mgr.NewLimiter("beta", 40, 12)
+	if err != nil {
+		t.Fatalf("unexpected error creating limiter beta: %v", err)
+	}
+
+	alpha.SetInUse(true)
+	beta.SetInUse(true)
+
+	if _, err := mgr.EnsureLimiter("alpha", 60, 15); err != nil {
+		t.Fatalf("EnsureLimiter rebalance failed: %v", err)
+	}
+	if got := alpha.limiter.Limit(); got != rate.Limit(60) {
+		t.Fatalf("expected alpha scaled limit 60, got %v", got)
+	}
+	if got := beta.limiter.Limit(); got != rate.Limit(40) {
+		t.Fatalf("expected beta scaled limit 40, got %v", got)
+	}
+
+	alpha.SetInUse(false)
+	beta.SetInUse(false)
+	if got := alpha.limiter.Limit(); got != rate.Limit(alpha.rate) {
+		t.Fatalf("expected alpha to reset to base rate, got %v", got)
+	}
+}
+
+func TestLimitManagerSetRateAndRemoveLimiter(t *testing.T) {
+	mgr := NewLimitManager(100)
+
+	alpha, err := mgr.NewLimiter("alpha", 30, 10)
+	if err != nil {
+		t.Fatalf("unexpected error creating limiter alpha: %v", err)
+	}
+	beta, err := mgr.NewLimiter("beta", 70, 20)
+	if err != nil {
+		t.Fatalf("unexpected error creating limiter beta: %v", err)
+	}
+
+	alpha.SetInUse(true)
+	beta.SetInUse(true)
+
+	mgr.SetRate(200)
+	if got := alpha.limiter.Limit(); got != rate.Limit((30*200)/100) {
+		t.Fatalf("expected alpha limit 60 after SetRate, got %v", got)
+	}
+	if got := beta.limiter.Limit(); got != rate.Limit((70*200)/100) {
+		t.Fatalf("expected beta limit 140 after SetRate, got %v", got)
+	}
+
+	mgr.RemoveLimiter("alpha")
+	if _, ok := mgr.limiters["alpha"]; ok {
+		t.Fatalf("expected alpha limiter to be removed")
+	}
+	if got := len(mgr.inUse); got != 1 {
+		t.Fatalf("expected 1 active limiter after removal, got %d", got)
+	}
+	if got := beta.limiter.Limit(); got != rate.Limit(200) {
+		t.Fatalf("expected beta to inherit full capacity, got %v", got)
+	}
+	if got := alpha.limiter.Limit(); got != rate.Limit(alpha.rate) {
+		t.Fatalf("expected alpha to retain base limit after removal, got %v", got)
+	}
+
+	beta.SetInUse(false)
+}
