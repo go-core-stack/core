@@ -23,6 +23,13 @@ func (l *Limiter) configure(newRate, newBurst int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// early‑return if l.limiter is nil to avoid a nil dereferencing
+	if l.limiter == nil {
+		l.rate = newRate
+		l.burst = newBurst
+		return
+	}
+
 	l.rate = newRate
 	l.burst = newBurst
 	l.limiter.SetLimit(rate.Limit(newRate))
@@ -36,18 +43,21 @@ func (l *Limiter) SetInUse(use bool) {
 		panic("limiter not initialized with manager")
 	}
 	l.mu.Lock()
+	notify, activate := false, false
 	if use {
-		l.usage++
+		if l.usage == 0 {
+			l.usage = 1
+			notify, activate = true, true
+		} else {
+			l.usage++
+		}
 	} else {
-		l.usage--
-	}
-	activate := false
-	notify := false
-	if l.usage <= 0 {
-		notify = true
-	} else if l.usage == 1 {
-		notify = true
-		activate = true
+		if l.usage == 1 {
+			l.usage = 0
+			notify = true
+		} else if l.usage > 1 {
+			l.usage--
+		}
 	}
 	l.mu.Unlock()
 	if notify {

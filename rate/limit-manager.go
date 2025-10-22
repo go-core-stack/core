@@ -49,6 +49,9 @@ func (m *LimitManager) RemoveLimiter(key string) {
 func (m *LimitManager) UpdateInUse(l *Limiter, use bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, ok := m.limiters[l.key]; !ok {
+		return
+	}
 	if use {
 		m.inUse[l.key] = l
 	} else {
@@ -121,7 +124,6 @@ func (m *LimitManager) removeLimiterLocked(key string) {
 	}
 
 	delete(m.limiters, key)
-
 	lim.limiter.SetLimit(rate.Limit(lim.rate))
 	lim.limiter.SetBurst(int(lim.burst))
 
@@ -140,11 +142,17 @@ func (m *LimitManager) rebalanceLocked() {
 		return
 	}
 
+	if m.rate <= 0 {
+		m.resetActiveLimiterLimits()
+		return
+	}
+
 	var sumActive int64
 	for _, lim := range m.inUse {
 		sumActive += lim.rate
 	}
 	if sumActive <= 0 {
+		m.resetActiveLimiterLimits()
 		return
 	}
 
@@ -156,6 +164,13 @@ func (m *LimitManager) rebalanceLocked() {
 			scaled = 1
 		}
 		lim.limiter.SetLimit(rate.Limit(scaled))
+		lim.limiter.SetBurst(int(lim.burst))
+	}
+}
+
+func (m *LimitManager) resetActiveLimiterLimits() {
+	for _, lim := range m.inUse {
+		lim.limiter.SetLimit(rate.Limit(0))
 		lim.limiter.SetBurst(int(lim.burst))
 	}
 }
