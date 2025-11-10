@@ -22,8 +22,10 @@ type InternaData struct {
 }
 
 type MyData struct {
-	Desc string
-	Val  *InternaData
+	Desc  string
+	Val   *InternaData
+	Score int
+	Order int
 }
 
 type MyTable struct {
@@ -275,6 +277,149 @@ func Test_CachedClient(t *testing.T) {
 			if count != 2 {
 				t.Errorf("expected delete of two entries from table, but got %d", count)
 			}
+		}
+	})
+
+	t.Run("test_sorting_functionality", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Insert multiple entries with different scores and orders
+		testData := []struct {
+			name  string
+			desc  string
+			score int
+			order int
+		}{
+			{"test-sort-1", "first", 100, 3},
+			{"test-sort-2", "second", 200, 1},
+			{"test-sort-3", "third", 150, 2},
+			{"test-sort-4", "fourth", 200, 4},
+			{"test-sort-5", "fifth", 50, 5},
+		}
+
+		// Insert all test entries
+		for _, td := range testData {
+			key := &MyKey{Name: td.name}
+			data := &MyData{
+				Desc:  td.desc,
+				Score: td.score,
+				Order: td.order,
+				Val:   &InternaData{Test: "test"},
+			}
+			err := myTable.Insert(ctx, key, data)
+			if err != nil {
+				t.Errorf("failed inserting test data %s: %s", td.name, err)
+			}
+		}
+
+		// Wait for cache to update
+		time.Sleep(1 * time.Second)
+
+		// Test 1: Sort by score ascending
+		results, err := myTable.DBFindManyWithOpts(ctx, nil,
+			WithLimit(10),
+			WithSort(SortOption{Field: "score", Direction: SortAscending}))
+		if err != nil {
+			t.Errorf("failed to find entries with ascending sort: %s", err)
+		}
+		if len(results) != 5 {
+			t.Errorf("expected 5 results, got %d", len(results))
+		}
+		if results[0].Score != 50 {
+			t.Errorf("expected first score to be 50, got %d", results[0].Score)
+		}
+		if results[len(results)-1].Score != 200 {
+			t.Errorf("expected last score to be 200, got %d", results[len(results)-1].Score)
+		}
+
+		// Test 2: Sort by score descending
+		results, err = myTable.DBFindManyWithOpts(ctx, nil,
+			WithLimit(10),
+			WithSort(SortOption{Field: "score", Direction: SortDescending}))
+		if err != nil {
+			t.Errorf("failed to find entries with descending sort: %s", err)
+		}
+		if len(results) != 5 {
+			t.Errorf("expected 5 results, got %d", len(results))
+		}
+		if results[0].Score != 200 {
+			t.Errorf("expected first score to be 200, got %d", results[0].Score)
+		}
+		if results[len(results)-1].Score != 50 {
+			t.Errorf("expected last score to be 50, got %d", results[len(results)-1].Score)
+		}
+
+		// Test 3: Multi-field sort (score descending, then order ascending)
+		results, err = myTable.DBFindManyWithOpts(ctx, nil,
+			WithLimit(10),
+			WithSort(
+				SortOption{Field: "score", Direction: SortDescending},
+				SortOption{Field: "order", Direction: SortAscending},
+			))
+		if err != nil {
+			t.Errorf("failed to find entries with multi-field sort: %s", err)
+		}
+		if len(results) != 5 {
+			t.Errorf("expected 5 results, got %d", len(results))
+		}
+		// First two should have score 200, with order 1 before order 4
+		if results[0].Score != 200 || results[0].Order != 1 {
+			t.Errorf("expected first result to have score=200, order=1, got score=%d, order=%d", results[0].Score, results[0].Order)
+		}
+		if results[1].Score != 200 || results[1].Order != 4 {
+			t.Errorf("expected second result to have score=200, order=4, got score=%d, order=%d", results[1].Score, results[1].Order)
+		}
+
+		// Test 4: No sorting (just limit, no sort options)
+		results, err = myTable.DBFindManyWithOpts(ctx, nil, WithLimit(10))
+		if err != nil {
+			t.Errorf("failed to find entries with no sort: %s", err)
+		}
+		if len(results) != 5 {
+			t.Errorf("expected 5 results with no sort, got %d", len(results))
+		}
+
+		// Test 5: Sorting with filter
+		filter := bson.D{{Key: "score", Value: bson.D{{Key: "$gte", Value: 150}}}}
+		results, err = myTable.DBFindManyWithOpts(ctx, filter,
+			WithLimit(10),
+			WithSort(SortOption{Field: "score", Direction: SortAscending}))
+		if err != nil {
+			t.Errorf("failed to find entries with filter and sort: %s", err)
+		}
+		if len(results) != 3 {
+			t.Errorf("expected 3 results with filter, got %d", len(results))
+		}
+		if results[0].Score != 150 {
+			t.Errorf("expected first filtered result to have score=150, got %d", results[0].Score)
+		}
+
+		// Test 6: Sorting with pagination
+		results, err = myTable.DBFindManyWithOpts(ctx, nil,
+			WithOffset(1),
+			WithLimit(2),
+			WithSort(SortOption{Field: "order", Direction: SortAscending}))
+		if err != nil {
+			t.Errorf("failed to find entries with pagination and sort: %s", err)
+		}
+		if len(results) != 2 {
+			t.Errorf("expected 2 results with pagination, got %d", len(results))
+		}
+		// Should skip first (order=1) and return next two (order=2,3)
+		if results[0].Order != 2 {
+			t.Errorf("expected first paginated result to have order=2, got %d", results[0].Order)
+		}
+		if results[1].Order != 3 {
+			t.Errorf("expected second paginated result to have order=3, got %d", results[1].Order)
+		}
+
+		// Cleanup: delete all test entries
+		count, err := myTable.col.DeleteMany(ctx, bson.D{})
+		if err != nil {
+			t.Errorf("failed to delete test entries: %s", err)
+		}
+		if count != 5 {
+			t.Errorf("expected to delete 5 entries, deleted %d", count)
 		}
 	})
 }

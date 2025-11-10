@@ -210,6 +210,49 @@ func (t *CachedTable[K, E]) DBFindMany(ctx context.Context, filter any, offset, 
 	return data, nil
 }
 
+// DBFindManyWithOpts retrieves multiple entries matching the provided filter from database with optional parameters.
+// Supports pagination (limit, offset) and sorting through functional options.
+// Returns a slice of entries and error if none found or if the table is not initialized.
+//
+// Example usage:
+//
+//	results, err := table.DBFindManyWithOpts(ctx, filter,
+//	    WithLimit(10),
+//	    WithOffset(20),
+//	    WithSort(SortOption{Field: "price", Direction: SortAscending}))
+func (t *CachedTable[K, E]) DBFindManyWithOpts(ctx context.Context, filter any, opts ...FindOption) ([]*E, error) {
+	if t.col == nil {
+		return nil, errors.Wrapf(errors.InvalidArgument, "Table not initialized")
+	}
+
+	// Apply functional options
+	findOpts := &FindOptions{}
+	for _, opt := range opts {
+		opt(findOpts)
+	}
+
+	// Build MongoDB options
+	mongoOpts := options.Find()
+	if findOpts.Limit != nil {
+		mongoOpts = mongoOpts.SetLimit(int64(*findOpts.Limit))
+	}
+	if findOpts.Offset != nil {
+		mongoOpts = mongoOpts.SetSkip(int64(*findOpts.Offset))
+	}
+	if len(findOpts.Sort) > 0 {
+		mongoOpts = mongoOpts.SetSort(buildSortDocument(findOpts.Sort))
+	}
+
+	// Execute query
+	var data []*E
+	err := t.col.FindMany(ctx, filter, &data, mongoOpts)
+	if err != nil {
+		return nil, errors.Wrapf(errors.NotFound, "failed to find any entry: %s", err)
+	}
+
+	return data, nil
+}
+
 // Count retrieves count of entries matching the provided filter.
 // Returns count of entries and error if none found or if the table is not initialized.
 func (t *CachedTable[K, E]) Count(ctx context.Context, filter any) (int64, error) {
