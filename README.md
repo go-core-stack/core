@@ -14,10 +14,28 @@ Includes most common supported error types like
 - Invalid Argument
 - and more, while defaulting to unknown error type, while code is not set
 
-### Mongo DB Client
-Mongo DB client routines, allowing streamlining and centralizing the core
-functions and operations with standard implementation. with most of the
-capabilities offered by mongo DB
+### Database Abstraction Layer (db/)
+Database abstraction layer providing generic, type-safe database operations with
+MongoDB as the primary implementation. Features include:
+- Generic interfaces (StoreClient → Store → StoreCollection)
+- Change stream monitoring with callbacks
+- Event logging with audit support
+- High availability configuration (majority write concern, journaling)
+- Error code translation for consistent error handling
+- Thread-safe source identifier tracking for multi-replica deployments
+
+See [db/README.md](db/README.md) for detailed documentation.
+
+### Table Abstraction Layer (table/)
+High-level table abstractions built on the database layer, providing:
+- **Table[K, E]**: Type-safe direct database access with reconciler integration
+- **CachedTable[K, E]**: In-memory cached table with automatic synchronization
+- Go generics for compile-time type safety
+- Automatic cache updates via change stream callbacks
+- Thread-safe concurrent access with read-write locks
+- Write-through caching with eventual consistency
+
+See [table/README.md](table/README.md) for detailed documentation.
 
 ### Reconciler infra
 Reconciler infra is influenced by kubernetes controller and manager
