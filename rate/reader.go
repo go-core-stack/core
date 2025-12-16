@@ -17,13 +17,18 @@ type rlReader struct {
 
 // Read implements io.Reader with rate limiting.
 //
-// Note on token reservation: This method acquires tokens equal to the requested
-// read size (capped at burst) before performing the read. If the underlying
-// reader returns fewer bytes than requested, those tokens are still consumed.
-// This design prioritizes rate limit guarantees over precision—post-read token
-// acquisition would be more accurate but could allow burst violations. For most
-// use cases, this over-reservation is acceptable and prevents gaming the rate
-// limiter with small reads.
+// Rate limiting is applied BEFORE performing the read to prevent bursts and ensure
+// fair resource distribution (preventing noisy neighbors). This means:
+//   - Tokens are acquired for the requested read size (capped at burst)
+//   - The read operation is then performed
+//   - If the read returns fewer bytes than requested, those tokens are still consumed
+//
+// This over-reservation trade-off is intentional:
+//   - Pros: Prevents bursts, ensures predictable rate limiting, fair multi-tenant usage
+//   - Cons: May consume tokens for bytes not actually transferred on partial reads
+//
+// For most use cases (bandwidth control, QoS, preventing noisy neighbors), this
+// approach is preferred over post-operation metering.
 func (r *rlReader) Read(p []byte) (int, error) {
 	// Safe to cast: burst is validated to fit in int during limiter creation
 	burstSize := int(r.lim.burst)
@@ -31,10 +36,13 @@ func (r *rlReader) Read(p []byte) (int, error) {
 	if chunk > burstSize {
 		chunk = burstSize
 	}
-	err := r.lim.WaitN(r.ctx, chunk)
-	if err != nil {
+
+	// Acquire tokens BEFORE reading to prevent bursts
+	if err := r.lim.WaitN(r.ctx, chunk); err != nil {
 		return 0, err
 	}
+
+	// Perform the read after rate limiting
 	return r.rc.Read(p[:chunk])
 }
 
