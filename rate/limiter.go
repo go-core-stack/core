@@ -41,7 +41,7 @@ func (l *Limiter) SetInUse(use bool) {
 	}
 	l.mu.Unlock()
 	if notify {
-		l.mgr.UpdateInUse(l, activate)
+		l.mgr.updateInUse(l, activate)
 	}
 }
 
