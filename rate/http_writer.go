@@ -26,11 +26,15 @@ func (w *rlWriter) WriteHeader(code int) {
 
 // Write implements http.ResponseWriter.Write with rate limiting.
 //
-// The method writes data in chunks no larger than the burst size, acquiring
-// tokens before each chunk. If a chunk write fails partway through, tokens
-// for the full chunk are consumed even though fewer bytes were written. This
-// is the same trade-off as in Read—it prioritizes rate limit enforcement over
-// byte-level precision.
+// Rate limiting is applied BEFORE each write to prevent bursts and ensure fair
+// resource distribution. The method writes data in chunks no larger than the
+// burst size, acquiring tokens before each chunk write.
+//
+// This over-reservation trade-off is intentional:
+//   - Pros: Prevents bursts, ensures predictable throughput, fair multi-tenant usage
+//   - Cons: May consume tokens for bytes not actually written on partial writes
+//
+// This approach prioritizes preventing noisy neighbors over byte-level accuracy.
 func (w *rlWriter) Write(p []byte) (int, error) {
 	written := 0
 	// Safe to cast: burst is validated to fit in int during limiter creation
@@ -41,15 +45,19 @@ func (w *rlWriter) Write(p []byte) (int, error) {
 		if chunk > burstSize {
 			chunk = burstSize
 		}
-		err := w.lim.WaitN(w.ctx, chunk)
-		if err != nil {
+
+		// Acquire tokens BEFORE writing to prevent bursts
+		if err := w.lim.WaitN(w.ctx, chunk); err != nil {
 			return written, err
 		}
+
+		// Perform the write after rate limiting
 		n, err := w.w.Write(p[written : written+chunk])
 		written += n
 		if err != nil {
 			return written, err
 		}
+
 		// Optionally flush to reduce buffering latency for streaming
 		if f, ok := w.w.(http.Flusher); ok {
 			f.Flush()
