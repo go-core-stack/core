@@ -129,7 +129,7 @@ func (c *mongoCollection) UpdateOne(ctx context.Context, key any, data any, upse
 
 	// check there should be at least one entry in matched count
 	// or upserted count to not return an error here
-	if resp.MatchedCount != 0 && resp.UpsertedCount != 0 {
+	if resp.MatchedCount == 0 && resp.UpsertedCount == 0 {
 		return errors.Wrap(errors.NotFound, "No Document found")
 	}
 
