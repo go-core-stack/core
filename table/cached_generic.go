@@ -16,6 +16,26 @@ import (
 	"github.com/go-core-stack/core/reconciler"
 )
 
+// CachedTableConfig holds configuration options for CachedTable initialization.
+type CachedTableConfig struct {
+	// ReadThrough enables lazy loading: entries are loaded from DB on cache miss
+	// instead of eagerly loading all entries at initialization.
+	// Default: false (eager loading)
+	ReadThrough bool
+}
+
+// CachedTableOption is a functional option for configuring CachedTable.
+type CachedTableOption func(*CachedTableConfig)
+
+// WithReadThrough enables read-through caching mode where entries are loaded
+// from the database on cache miss instead of eagerly loading all entries.
+// This is useful for large datasets where loading everything upfront is impractical.
+func WithReadThrough() CachedTableOption {
+	return func(cfg *CachedTableConfig) {
+		cfg.ReadThrough = true
+	}
+}
+
 // CachedTable is a generic table type providing common functions and types to specific
 // structures each table is built using. This table also ensure keeping an inmemory
 // cache information to enable better responsiveness for critical path data fetch, where
@@ -28,21 +48,49 @@ import (
 // E: Entry type (must NOT be a pointer type)
 type CachedTable[K comparable, E any] struct {
 	reconciler.ManagerImpl
-	cacheMu sync.RWMutex
-	cache   map[K]*E
-	col     db.StoreCollection
+	cacheMu     sync.RWMutex
+	cache       map[K]*E
+	col         db.StoreCollection
+	readThrough bool
 }
 
-// Initialize sets up the Table with the provided db.StoreCollection.
-// It performs sanity checks on the entry and key types and registers the key type with the collection.
-// Must be called before any other operation.
+// Initialize sets up the Table with the provided db.StoreCollection using default configuration.
+// By default, it eagerly loads all entries from the database into the cache.
+// For read-through caching, use InitializeWithConfig with WithReadThrough option.
 //
 // Returns an error if the table is already initialized, the entry or key type is a pointer,
 // or if the collection setup fails.
 func (t *CachedTable[K, E]) Initialize(col db.StoreCollection) error {
+	return t.InitializeWithConfig(col)
+}
+
+// InitializeWithConfig sets up the Table with the provided db.StoreCollection and configuration options.
+// It performs sanity checks on the entry and key types and registers the key type with the collection.
+// Must be called before any other operation.
+//
+// Example usage:
+//
+//	// Eager loading (default)
+//	err := table.InitializeWithConfig(col)
+//
+//	// Read-through caching
+//	err := table.InitializeWithConfig(col, WithReadThrough())
+//
+// Returns an error if the table is already initialized, the entry or key type is a pointer,
+// or if the collection setup fails.
+func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ...CachedTableOption) error {
 	if t.col != nil {
 		return errors.Wrapf(errors.AlreadyExists, "Table is already initialized")
 	}
+
+	// Apply configuration options
+	config := &CachedTableConfig{
+		ReadThrough: false, // Default to eager loading
+	}
+	for _, opt := range opts {
+		opt(config)
+	}
+	t.readThrough = config.ReadThrough
 
 	if t.cache == nil {
 		t.cache = map[K]*E{}
@@ -77,23 +125,26 @@ func (t *CachedTable[K, E]) Initialize(col db.StoreCollection) error {
 
 	t.col = col
 
-	list := []keyOnly[K]{}
-	err = t.col.FindMany(context.Background(), nil, &list)
-	if err != nil {
-		log.Panicf("got error while fetching all keys %s", err)
-	}
-	for _, k := range list {
-		entry, err := t.DBFind(context.Background(), &k.Key)
+	// Only eagerly load entries if read-through is disabled
+	if !t.readThrough {
+		list := []keyOnly[K]{}
+		err = t.col.FindMany(context.Background(), nil, &list)
 		if err != nil {
-			// this should not happen in regular scenarios
-			// log and return from here
-			log.Printf("failed to find an entry, got error: %s", err)
-		} else {
-			func() {
-				t.cacheMu.Lock()
-				defer t.cacheMu.Unlock()
-				t.cache[k.Key] = entry
-			}()
+			log.Panicf("got error while fetching all keys %s", err)
+		}
+		for _, k := range list {
+			entry, err := t.DBFind(context.Background(), &k.Key)
+			if err != nil {
+				// this should not happen in regular scenarios
+				// log and return from here
+				log.Printf("failed to find an entry, got error: %s", err)
+			} else {
+				func() {
+					t.cacheMu.Lock()
+					defer t.cacheMu.Unlock()
+					t.cache[k.Key] = entry
+				}()
+			}
 		}
 	}
 
@@ -168,16 +219,44 @@ func (t *CachedTable[K, E]) Update(ctx context.Context, key *K, entry *E) error 
 	return t.col.UpdateOne(ctx, key, entry, false)
 }
 
-// Find retrieves an entry by key from the Cache
+// Find retrieves an entry by key from the Cache.
+// If read-through caching is enabled and the entry is not in cache,
+// it will load the entry from the database and populate the cache.
 // Returns the entry and error if not found or if the table is not initialized.
 func (t *CachedTable[K, E]) Find(ctx context.Context, key *K) (*E, error) {
+	// First, try to find in cache with read lock
 	t.cacheMu.RLock()
-	defer t.cacheMu.RUnlock()
 	entry, ok := t.cache[*key]
-	if !ok {
+	t.cacheMu.RUnlock()
+
+	if ok {
+		return entry, nil
+	}
+
+	// Cache miss - handle based on read-through setting
+	if !t.readThrough {
 		return nil, errors.Wrapf(errors.NotFound, "failed to find entry with key %v", key)
 	}
-	return entry, nil
+
+	// Read-through mode: load from database and populate cache
+	// Acquire write lock to populate cache
+	t.cacheMu.Lock()
+	defer t.cacheMu.Unlock()
+
+	// Double-check: another goroutine might have loaded it while we were waiting for the lock
+	if entry, ok := t.cache[*key]; ok {
+		return entry, nil
+	}
+
+	// Load from database
+	dbEntry, err := t.DBFind(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate cache
+	t.cache[*key] = dbEntry
+	return dbEntry, nil
 }
 
 // DBFind retrieves an entry by key from the Database

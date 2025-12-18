@@ -422,4 +422,188 @@ func Test_CachedClient(t *testing.T) {
 			t.Errorf("expected to delete 5 entries, deleted %d", count)
 		}
 	})
+
+	t.Run("read_through_caching", func(t *testing.T) {
+		// Initialize a new table with read-through caching enabled
+		readThroughTable := &MyTable{}
+
+		config := &db.MongoConfig{
+			Host:     "localhost",
+			Port:     "27017",
+			Username: "root",
+			Password: "password",
+		}
+
+		client, err := db.NewMongoClient(config)
+		if err != nil {
+			t.Errorf("failed to connect to mongo DB Error: %s", err)
+			return
+		}
+
+		s := client.GetDataStore("test")
+		col := s.GetCollection("my-read-through-table")
+
+		// Clean up any existing data
+		ctx := context.Background()
+		_, _ = col.DeleteMany(ctx, bson.D{})
+
+		// Initialize with read-through caching
+		err = readThroughTable.InitializeWithConfig(col, WithReadThrough())
+		if err != nil {
+			t.Errorf("failed to initialize read-through cached table: %s", err)
+			return
+		}
+
+		// Insert data directly to database (bypassing cache)
+		key1 := &MyKey{Name: "read-through-key-1"}
+		data1 := &MyData{
+			Desc:  "read-through-data-1",
+			Score: 100,
+			Val:   &InternaData{Test: "test-1"},
+		}
+
+		err = col.InsertOne(ctx, key1, data1)
+		if err != nil {
+			t.Errorf("failed to insert data to DB: %s", err)
+		}
+
+		// First Find should load from DB and populate cache (read-through)
+		entry, err := readThroughTable.Find(ctx, key1)
+		if err != nil {
+			t.Errorf("read-through Find failed: %s", err)
+		}
+		if entry == nil {
+			t.Errorf("expected entry to be found via read-through, got nil")
+		} else {
+			if entry.Desc != "read-through-data-1" {
+				t.Errorf("expected read-through-data-1, got %s", entry.Desc)
+			}
+		}
+
+		// Second Find should use cache (no DB hit needed)
+		entry2, err := readThroughTable.Find(ctx, key1)
+		if err != nil {
+			t.Errorf("cached Find failed: %s", err)
+		}
+		if entry2 == nil {
+			t.Errorf("expected entry to be in cache, got nil")
+		} else {
+			if entry2.Desc != "read-through-data-1" {
+				t.Errorf("expected read-through-data-1 from cache, got %s", entry2.Desc)
+			}
+		}
+
+		// Test cache miss for non-existent key
+		nonExistentKey := &MyKey{Name: "non-existent-key"}
+		_, err = readThroughTable.Find(ctx, nonExistentKey)
+		if err == nil {
+			t.Errorf("expected error for non-existent key, got nil")
+		}
+
+		// Test that cache is updated via watch callback when data changes
+		key2 := &MyKey{Name: "read-through-key-2"}
+		data2 := &MyData{
+			Desc:  "read-through-data-2",
+			Score: 200,
+			Val:   &InternaData{Test: "test-2"},
+		}
+
+		// Insert via table method (should trigger watch callback)
+		err = readThroughTable.Insert(ctx, key2, data2)
+		if err != nil {
+			t.Errorf("failed to insert via table: %s", err)
+		}
+
+		// Wait for watch callback to process
+		time.Sleep(1 * time.Second)
+
+		// Should be in cache now
+		entry3, err := readThroughTable.Find(ctx, key2)
+		if err != nil {
+			t.Errorf("failed to find inserted entry: %s", err)
+		}
+		if entry3 == nil {
+			t.Errorf("expected entry to be in cache after insert, got nil")
+		} else {
+			if entry3.Desc != "read-through-data-2" {
+				t.Errorf("expected read-through-data-2, got %s", entry3.Desc)
+			}
+		}
+
+		// Cleanup
+		_, err = col.DeleteMany(ctx, bson.D{})
+		if err != nil {
+			t.Errorf("failed to cleanup test data: %s", err)
+		}
+	})
+
+	t.Run("eager_loading_default", func(t *testing.T) {
+		// Initialize a new table with default (eager loading) mode
+		eagerTable := &MyTable{}
+
+		config := &db.MongoConfig{
+			Host:     "localhost",
+			Port:     "27017",
+			Username: "root",
+			Password: "password",
+		}
+
+		client, err := db.NewMongoClient(config)
+		if err != nil {
+			t.Errorf("failed to connect to mongo DB Error: %s", err)
+			return
+		}
+
+		s := client.GetDataStore("test")
+		col := s.GetCollection("my-eager-table")
+
+		ctx := context.Background()
+		_, _ = col.DeleteMany(ctx, bson.D{})
+
+		// Insert data BEFORE initializing table
+		key1 := &MyKey{Name: "eager-key-1"}
+		data1 := &MyData{
+			Desc:  "eager-data-1",
+			Score: 100,
+			Val:   &InternaData{Test: "test-1"},
+		}
+
+		err = col.InsertOne(ctx, key1, data1)
+		if err != nil {
+			t.Errorf("failed to insert data to DB: %s", err)
+		}
+
+		// Initialize with default eager loading
+		err = eagerTable.Initialize(col)
+		if err != nil {
+			t.Errorf("failed to initialize eager cached table: %s", err)
+			return
+		}
+
+		// Data should already be in cache (eagerly loaded during init)
+		entry, err := eagerTable.Find(ctx, key1)
+		if err != nil {
+			t.Errorf("eager Find failed: %s", err)
+		}
+		if entry == nil {
+			t.Errorf("expected entry to be eagerly loaded, got nil")
+		} else {
+			if entry.Desc != "eager-data-1" {
+				t.Errorf("expected eager-data-1, got %s", entry.Desc)
+			}
+		}
+
+		// Test that non-existent key returns error (no read-through)
+		nonExistentKey := &MyKey{Name: "non-existent-eager-key"}
+		_, err = eagerTable.Find(ctx, nonExistentKey)
+		if err == nil {
+			t.Errorf("expected error for non-existent key in eager mode, got nil")
+		}
+
+		// Cleanup
+		_, err = col.DeleteMany(ctx, bson.D{})
+		if err != nil {
+			t.Errorf("failed to cleanup test data: %s", err)
+		}
+	})
 }
