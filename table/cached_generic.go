@@ -160,7 +160,11 @@ func (t *CachedTable[K, E]) callback(op string, wKey any) {
 		if err != nil {
 			if errors.IsNotFound(err) {
 				// consider delete scenario
-				delete(t.cache, *key)
+				func() {
+					t.cacheMu.Lock()
+					defer t.cacheMu.Unlock()
+					delete(t.cache, *key)
+				}()
 			} else {
 				// this should not happen in regular scenarios
 				// log and return from here
