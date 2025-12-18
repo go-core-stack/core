@@ -108,6 +108,57 @@ func Test_ClientConnection(t *testing.T) {
 		}
 	})
 
+	t.Run("UpdateOne_NonExistent_Without_Upsert", func(t *testing.T) {
+		config := &MongoConfig{
+			Host:     "localhost",
+			Port:     "27017",
+			Username: "root",
+			Password: "password",
+		}
+
+		client, err := NewMongoClient(config)
+		if err != nil {
+			t.Errorf("failed to connect to mongo DB Error: %s", err)
+			return
+		}
+
+		err = client.HealthCheck(context.Background())
+		if err != nil {
+			t.Errorf("failed to perform Health check with DB Error: %s", err)
+		}
+
+		s := client.GetDataStore("test")
+		col := s.GetCollection("collection1")
+
+		// Use a key that definitely doesn't exist
+		nonExistentKey := &MyKey{
+			Name: "non-existent-key-for-update-test",
+		}
+		data := &MyData{
+			Desc: "test-description",
+			Val: &InternaData{
+				Test: "test-value",
+			},
+		}
+
+		// Ensure the key doesn't exist by attempting to delete it
+		_ = col.DeleteOne(context.Background(), nonExistentKey)
+
+		// Try to update a non-existent document without upsert
+		// This should return a NotFound error
+		err = col.UpdateOne(context.Background(), nonExistentKey, data, false)
+		if err == nil {
+			t.Errorf("expected NotFound error when updating non-existent document without upsert, but got nil")
+		}
+
+		// Verify that no document was created
+		val := &MyData{}
+		err = col.FindOne(context.Background(), nonExistentKey, val)
+		if err == nil {
+			t.Errorf("expected NotFound error when finding document that should not exist, but got nil")
+		}
+	})
+
 	t.Run("Find_many_with_offset_limits", func(t *testing.T) {
 		config := &MongoConfig{
 			Host:     "localhost",
