@@ -1,3 +1,6 @@
+// Copyright © 2025-2026 Prabhjot Singh Sethi, All Rights reserved
+// Author: Prabhjot Singh Sethi <prabhjot.sethi@gmail.com>
+//
 // This utility reseeds a target MongoDB database from a source replica set, then
 // tails the change stream to reconcile new writes so the two stay in sync.
 // go run experimental/replicate_mongo.go -src mongodb://root:password@localhost:27017/?replicaSet=rs0 -dst mongodb://root:password@192.168.100.21:27016/ -srcdb auth-gateway -dstdb auth-gateway -keep true

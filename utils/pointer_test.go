@@ -1,4 +1,4 @@
-// Copyright © 2025 Prabhjot Singh Sethi, All Rights reserved
+// Copyright © 2025-2026 Prabhjot Singh Sethi, All Rights reserved
 // Author: Aditya Harindar <aditya.harindar@gmail.com>
 
 package utils
