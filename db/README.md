@@ -149,11 +149,13 @@ type IndexField struct {
 type IndexDefinition struct {
     Fields []IndexField
     Unique bool
+    Sparse bool
+    TTL    time.Duration
     Name   string
 }
 ```
 
-Used with `EnsureIndexes()` to declaratively create indexes on a collection. The operation is idempotent — calling it multiple times with the same definitions is safe.
+Used with `EnsureIndexes()` to declaratively create indexes on a collection. Supports unique constraints, sparse indexes (only index documents containing the field), and TTL indexes (automatic document expiration). The operation is idempotent — calling it multiple times with the same definitions is safe.
 
 ### mongo.go (517 lines)
 Complete MongoDB implementation of all interfaces.
@@ -304,6 +306,26 @@ err = col.EnsureIndexes(ctx, []db.IndexDefinition{
             {Field: "created_at", IndexType: db.IndexDescending},
         },
         Name: "status_created_idx",
+    },
+})
+
+// Create a sparse index (only indexes documents where the field exists)
+err = col.EnsureIndexes(ctx, []db.IndexDefinition{
+    {
+        Fields: []db.IndexField{
+            {Field: "optional_tag", IndexType: db.IndexAscending},
+        },
+        Sparse: true,
+    },
+})
+
+// Create a TTL index (auto-expire documents after 30 days)
+err = col.EnsureIndexes(ctx, []db.IndexDefinition{
+    {
+        Fields: []db.IndexField{
+            {Field: "completed_at", IndexType: db.IndexAscending},
+        },
+        TTL: 30 * 24 * time.Hour,
     },
 })
 ```

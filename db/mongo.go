@@ -338,7 +338,10 @@ func (c *mongoCollection) EnsureIndexes(ctx context.Context, indexes []IndexDefi
 			keys = append(keys, bson.E{Key: f.Field, Value: int(f.IndexType)})
 		}
 		model := mongo.IndexModel{Keys: keys}
-		opts := options.Index().SetUnique(idx.Unique)
+		opts := options.Index().SetUnique(idx.Unique).SetSparse(idx.Sparse)
+		if idx.TTL > 0 {
+			opts.SetExpireAfterSeconds(int32(idx.TTL.Seconds()))
+		}
 		if idx.Name != "" {
 			opts.SetName(idx.Name)
 		}
