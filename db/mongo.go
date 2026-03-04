@@ -315,6 +315,44 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 	return nil
 }
 
+// EnsureIndexes creates the specified indexes on the collection if they
+// don't already exist. This operation is idempotent.
+func (c *mongoCollection) EnsureIndexes(ctx context.Context, indexes []IndexDefinition) error {
+	if len(indexes) == 0 {
+		return nil
+	}
+
+	models := make([]mongo.IndexModel, 0, len(indexes))
+	for _, idx := range indexes {
+		if len(idx.Fields) == 0 {
+			return errors.Wrap(errors.InvalidArgument, "index definition must have at least one field")
+		}
+		keys := bson.D{}
+		for _, f := range idx.Fields {
+			if f.Field == "" {
+				return errors.Wrap(errors.InvalidArgument, "index field name must not be empty")
+			}
+			if f.IndexType != IndexAscending && f.IndexType != IndexDescending {
+				return errors.Wrapf(errors.InvalidArgument, "invalid index type %d for field %q", f.IndexType, f.Field)
+			}
+			keys = append(keys, bson.E{Key: f.Field, Value: int(f.IndexType)})
+		}
+		model := mongo.IndexModel{Keys: keys}
+		opts := options.Index().SetUnique(idx.Unique)
+		if idx.Name != "" {
+			opts.SetName(idx.Name)
+		}
+		model.Options = opts
+		models = append(models, model)
+	}
+
+	_, err := c.col.Indexes().CreateMany(ctx, models)
+	if err != nil {
+		return interpretMongoError(err)
+	}
+	return nil
+}
+
 // startEventLogger starts the event logger for the collection and trigger logger for events
 func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflect.Type, timestamp *bson.Timestamp) error {
 	// TODO(prabhjot) if we may need to enable pre and post images for change streams
