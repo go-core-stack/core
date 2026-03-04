@@ -619,4 +619,154 @@ func Test_EnsureIndexes(t *testing.T) {
 			t.Fatalf("empty index list should be a no-op: %s", err)
 		}
 	})
+
+	t.Run("Invalid_Index_Type", func(t *testing.T) {
+		col := s.GetCollection("idx_test_invalid_type")
+
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{Fields: []IndexField{{Field: "desc", IndexType: IndexType(0)}}},
+		})
+		if err == nil {
+			t.Fatal("expected error for invalid index type, got nil")
+		}
+		if !errors.IsInvalidArgument(err) {
+			t.Fatalf("expected InvalidArgument error, got: %s", err)
+		}
+	})
+
+	t.Run("Negative_TTL_Ignored", func(t *testing.T) {
+		col := s.GetCollection("idx_test_negative_ttl")
+		defer col.DeleteMany(context.Background(), bson.D{})
+
+		// Negative TTL should be treated the same as zero (no TTL)
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{
+				Fields: []IndexField{{Field: "expires_at", IndexType: IndexAscending}},
+				TTL:    -1 * time.Hour,
+				Name:   "neg_ttl_idx",
+			},
+		})
+		if err != nil {
+			t.Fatalf("negative TTL should not cause an error: %s", err)
+		}
+
+		// Verify no expireAfterSeconds was set on the index
+		mc := col.(*mongoCollection)
+		cursor, err := mc.col.Indexes().List(context.Background())
+		if err != nil {
+			t.Fatalf("failed to list indexes: %s", err)
+		}
+		var indexes []bson.M
+		if err := cursor.All(context.Background(), &indexes); err != nil {
+			t.Fatalf("failed to decode indexes: %s", err)
+		}
+
+		for _, idx := range indexes {
+			if idx["name"] == "neg_ttl_idx" {
+				if _, hasTTL := idx["expireAfterSeconds"]; hasTTL {
+					t.Fatal("negative TTL should not produce expireAfterSeconds on the index")
+				}
+				return
+			}
+		}
+		t.Fatal("index 'neg_ttl_idx' not found in collection indexes")
+	})
+
+	t.Run("Sparse_Index", func(t *testing.T) {
+		col := s.GetCollection("idx_test_sparse")
+		defer col.DeleteMany(context.Background(), bson.D{})
+
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{
+				Fields: []IndexField{{Field: "optional_field", IndexType: IndexAscending}},
+				Sparse: true,
+				Name:   "sparse_idx",
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to create sparse index: %s", err)
+		}
+
+		// Insert a doc without the indexed field — sparse index should allow it
+		key1 := &MyKey{Name: "sparse-key-1"}
+		data1 := &MyData{Desc: "no optional field", Val: &InternaData{Test: "a"}}
+		if err := col.InsertOne(context.Background(), key1, data1); err != nil {
+			t.Fatalf("failed to insert doc without indexed field: %s", err)
+		}
+	})
+
+	t.Run("TTL_Index", func(t *testing.T) {
+		col := s.GetCollection("idx_test_ttl")
+		defer col.DeleteMany(context.Background(), bson.D{})
+
+		ttl := 72 * time.Hour
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{
+				Fields: []IndexField{{Field: "expires_at", IndexType: IndexAscending}},
+				TTL:    ttl,
+				Name:   "ttl_idx",
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to create TTL index: %s", err)
+		}
+
+		// Verify the TTL was set correctly by inspecting the index via the driver
+		mc := col.(*mongoCollection)
+		cursor, err := mc.col.Indexes().List(context.Background())
+		if err != nil {
+			t.Fatalf("failed to list indexes: %s", err)
+		}
+		var indexes []bson.M
+		if err := cursor.All(context.Background(), &indexes); err != nil {
+			t.Fatalf("failed to decode indexes: %s", err)
+		}
+
+		found := false
+		for _, idx := range indexes {
+			if idx["name"] == "ttl_idx" {
+				found = true
+				expSecs, ok := idx["expireAfterSeconds"].(int32)
+				if !ok {
+					t.Fatalf("expireAfterSeconds not found or wrong type on TTL index")
+				}
+				expected := int32(ttl.Seconds())
+				if expSecs != expected {
+					t.Fatalf("expected expireAfterSeconds=%d, got %d", expected, expSecs)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Fatal("TTL index 'ttl_idx' not found in collection indexes")
+		}
+	})
+
+	t.Run("Conflicting_Index_Options", func(t *testing.T) {
+		col := s.GetCollection("idx_test_conflict")
+		defer col.DeleteMany(context.Background(), bson.D{})
+
+		// Create a non-unique index on "desc"
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{
+				Fields: []IndexField{{Field: "desc", IndexType: IndexAscending}},
+				Unique: false,
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to create initial index: %s", err)
+		}
+
+		// Attempt to create an index with same keys but different options (unique)
+		// MongoDB should return an error for conflicting index options
+		err = col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{
+				Fields: []IndexField{{Field: "desc", IndexType: IndexAscending}},
+				Unique: true,
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for conflicting index options, got nil")
+		}
+	})
 }
