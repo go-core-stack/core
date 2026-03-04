@@ -13,6 +13,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/go-core-stack/core/errors"
 )
 
 type MyKey struct {
@@ -432,6 +434,189 @@ func Test_CollectionWatch(t *testing.T) {
 		err = col.DeleteOne(context.Background(), key)
 		if err != nil {
 			t.Errorf("failed to delete entry using key Error: %s", err)
+		}
+	})
+}
+
+func Test_EnsureIndexes(t *testing.T) {
+	config := &MongoConfig{
+		Host:     "localhost",
+		Port:     "27017",
+		Username: "root",
+		Password: "password",
+	}
+
+	client, err := NewMongoClient(config)
+	if err != nil {
+		t.Fatalf("failed to connect to mongo DB: %s", err)
+	}
+
+	err = client.HealthCheck(context.Background())
+	if err != nil {
+		t.Fatalf("failed to perform Health check with DB: %s", err)
+	}
+
+	s := client.GetDataStore("test")
+
+	t.Run("Single_Ascending_Index", func(t *testing.T) {
+		col := s.GetCollection("idx_test_ascending")
+		defer col.DeleteMany(context.Background(), bson.D{})
+
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{
+				Fields: []IndexField{{Field: "desc", IndexType: IndexAscending}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to create ascending index: %s", err)
+		}
+
+		// Insert two docs with same "desc" value — non-unique index should allow it
+		key1 := &MyKey{Name: "asc-key-1"}
+		key2 := &MyKey{Name: "asc-key-2"}
+		data := &MyData{Desc: "same-value", Val: &InternaData{Test: "a"}}
+
+		if err := col.InsertOne(context.Background(), key1, data); err != nil {
+			t.Fatalf("failed to insert first doc: %s", err)
+		}
+		if err := col.InsertOne(context.Background(), key2, data); err != nil {
+			t.Fatalf("non-unique index should allow duplicate values: %s", err)
+		}
+	})
+
+	t.Run("Unique_Index", func(t *testing.T) {
+		col := s.GetCollection("idx_test_unique")
+		defer col.DeleteMany(context.Background(), bson.D{})
+
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{
+				Fields: []IndexField{{Field: "desc", IndexType: IndexAscending}},
+				Unique: true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to create unique index: %s", err)
+		}
+
+		key1 := &MyKey{Name: "uniq-key-1"}
+		key2 := &MyKey{Name: "uniq-key-2"}
+		data := &MyData{Desc: "duplicate-value", Val: &InternaData{Test: "a"}}
+
+		if err := col.InsertOne(context.Background(), key1, data); err != nil {
+			t.Fatalf("failed to insert first doc: %s", err)
+		}
+
+		err = col.InsertOne(context.Background(), key2, data)
+		if err == nil {
+			t.Fatal("expected error inserting duplicate value with unique index, got nil")
+		}
+		if !errors.IsAlreadyExists(err) {
+			t.Fatalf("expected AlreadyExists error, got: %s", err)
+		}
+	})
+
+	t.Run("Compound_Index", func(t *testing.T) {
+		col := s.GetCollection("idx_test_compound")
+		defer col.DeleteMany(context.Background(), bson.D{})
+
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{
+				Fields: []IndexField{
+					{Field: "desc", IndexType: IndexAscending},
+					{Field: "val.test", IndexType: IndexDescending},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to create compound index: %s", err)
+		}
+	})
+
+	t.Run("Named_Index", func(t *testing.T) {
+		col := s.GetCollection("idx_test_named")
+		defer col.DeleteMany(context.Background(), bson.D{})
+
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{
+				Fields: []IndexField{{Field: "desc", IndexType: IndexAscending}},
+				Name:   "my_custom_index_name",
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to create named index: %s", err)
+		}
+	})
+
+	t.Run("Idempotent", func(t *testing.T) {
+		col := s.GetCollection("idx_test_idempotent")
+		defer col.DeleteMany(context.Background(), bson.D{})
+
+		idx := []IndexDefinition{
+			{
+				Fields: []IndexField{{Field: "desc", IndexType: IndexAscending}},
+				Unique: true,
+				Name:   "idempotent_idx",
+			},
+		}
+
+		if err := col.EnsureIndexes(context.Background(), idx); err != nil {
+			t.Fatalf("first EnsureIndexes call failed: %s", err)
+		}
+
+		if err := col.EnsureIndexes(context.Background(), idx); err != nil {
+			t.Fatalf("second EnsureIndexes call should be idempotent: %s", err)
+		}
+	})
+
+	t.Run("Empty_Fields_Validation", func(t *testing.T) {
+		col := s.GetCollection("idx_test_empty_fields")
+
+		// empty slice
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{Fields: []IndexField{}},
+		})
+		if err == nil {
+			t.Fatal("expected error for index definition with empty fields slice, got nil")
+		}
+		if !errors.IsInvalidArgument(err) {
+			t.Fatalf("expected InvalidArgument error, got: %s", err)
+		}
+
+		// nil slice
+		err = col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{Fields: nil},
+		})
+		if err == nil {
+			t.Fatal("expected error for index definition with nil fields, got nil")
+		}
+		if !errors.IsInvalidArgument(err) {
+			t.Fatalf("expected InvalidArgument error, got: %s", err)
+		}
+	})
+
+	t.Run("Empty_Field_Name_Validation", func(t *testing.T) {
+		col := s.GetCollection("idx_test_empty_field_name")
+
+		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
+			{Fields: []IndexField{{Field: "", IndexType: IndexAscending}}},
+		})
+		if err == nil {
+			t.Fatal("expected error for index field with empty name, got nil")
+		}
+		if !errors.IsInvalidArgument(err) {
+			t.Fatalf("expected InvalidArgument error, got: %s", err)
+		}
+	})
+
+	t.Run("Empty_Index_List", func(t *testing.T) {
+		col := s.GetCollection("idx_test_empty_list")
+
+		if err := col.EnsureIndexes(context.Background(), nil); err != nil {
+			t.Fatalf("nil index list should be a no-op: %s", err)
+		}
+
+		if err := col.EnsureIndexes(context.Background(), []IndexDefinition{}); err != nil {
+			t.Fatalf("empty index list should be a no-op: %s", err)
 		}
 	})
 }

@@ -33,6 +33,7 @@ type StoreCollection interface {
     DeleteOne(ctx context.Context, key any) error
     DeleteMany(ctx context.Context, filter any) (int64, error)
     Watch(ctx context.Context, filter any, cb WatchCallbackfn) error
+    EnsureIndexes(ctx context.Context, indexes []IndexDefinition) error
     startEventLogger(ctx context.Context, eventType reflect.Type, timestamp *bson.Timestamp) error
 }
 ```
@@ -42,6 +43,7 @@ type StoreCollection interface {
 - **Context-aware** operations for cancellation and timeout support
 - **Change monitoring** via `Watch()` with callback notifications
 - **Bulk operations** with `FindMany()` and `DeleteMany()`
+- **Index management** via `EnsureIndexes()` for idempotent index creation
 - **Event logging** for audit trails and debugging
 
 ### Store
@@ -121,13 +123,37 @@ func (e *EventLogger[K, E]) StartLogger(ctx context.Context, ts *bson.Timestamp)
 - Full document capture with change details
 
 ### store.go
-Core interface definitions and callback types:
+Core interface definitions, callback types, and index types:
 
 ```go
 type WatchCallbackfn func(op string, key any)
 ```
 
 Defines the callback signature for change notifications through `Watch()`.
+
+#### Index Types
+
+```go
+type IndexType int
+
+const (
+    IndexAscending  IndexType = 1
+    IndexDescending IndexType = -1
+)
+
+type IndexField struct {
+    Field     string
+    IndexType IndexType
+}
+
+type IndexDefinition struct {
+    Fields []IndexField
+    Unique bool
+    Name   string
+}
+```
+
+Used with `EnsureIndexes()` to declaratively create indexes on a collection. The operation is idempotent — calling it multiple times with the same definitions is safe.
 
 ### mongo.go (517 lines)
 Complete MongoDB implementation of all interfaces.
@@ -257,6 +283,31 @@ ts := bson.Timestamp{T: 1234567890, I: 1}
 err := eventLogger.StartLogger(ctx, &ts)
 ```
 
+### Creating Indexes
+
+```go
+// Create a unique index on a single field
+err := col.EnsureIndexes(ctx, []db.IndexDefinition{
+    {
+        Fields: []db.IndexField{
+            {Field: "email", IndexType: db.IndexAscending},
+        },
+        Unique: true,
+    },
+})
+
+// Create a compound index with a custom name
+err = col.EnsureIndexes(ctx, []db.IndexDefinition{
+    {
+        Fields: []db.IndexField{
+            {Field: "status", IndexType: db.IndexAscending},
+            {Field: "created_at", IndexType: db.IndexDescending},
+        },
+        Name: "status_created_idx",
+    },
+})
+```
+
 ### Source Identifier for Multi-Replica Tracking
 
 ```go
@@ -321,6 +372,7 @@ See `mongo_test.go` for comprehensive unit tests covering:
 - Error handling
 - Change stream monitoring
 - Event logging
+- Index management
 
 ## Performance Considerations
 
