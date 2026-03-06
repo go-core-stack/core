@@ -139,10 +139,10 @@ var (
 //   - 1.1 = Dynamic values extension
 //
 // IMPORTANT: For production use, you should either:
-//   1. Register your own Private Enterprise Number (PEN) with IANA at:
-//      https://www.iana.org/assignments/enterprise-numbers/
-//   2. Use your organization's existing PEN if available
-//   3. Create a custom OID by replacing DefaultDynamicValuesOID with your own asn1.ObjectIdentifier
+//  1. Register your own Private Enterprise Number (PEN) with IANA at:
+//     https://www.iana.org/assignments/enterprise-numbers/
+//  2. Use your organization's existing PEN if available
+//  3. Create a custom OID by replacing DefaultDynamicValuesOID with your own asn1.ObjectIdentifier
 //
 // The current PEN (98765) is a placeholder to avoid conflicts with registered numbers
 // like Sigstore (57264), and should be replaced before production deployment.
