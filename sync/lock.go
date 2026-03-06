@@ -6,6 +6,7 @@ package sync
 import (
 	"context"
 	"log"
+	"reflect"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/go-core-stack/core/db"
 	"github.com/go-core-stack/core/errors"
+	"github.com/go-core-stack/core/reconciler"
 )
 
 var (
@@ -47,7 +49,13 @@ type lockData struct {
 	Owner      string `bson:"owner,omitempty"`
 }
 
+type lockKeyOnly[K any] struct {
+	Key K `bson:"_id,omitempty"`
+}
+
 type LockTable[K any] struct {
+	reconciler.ManagerImpl
+
 	// collection name hosting locks for the table
 	colName string
 
@@ -62,9 +70,15 @@ type LockTable[K any] struct {
 }
 
 func (t *LockTable[K]) Callback(op string, wKey interface{}) {
-	// handle callback as and when needed
-	// we may need notification of release of locks
-	// allowing others to start working on it
+	// on lock release (delete), notify registered controllers
+	// allowing others to try acquiring the released lock
+	if op == "delete" {
+		t.NotifyCallback(wKey)
+		return
+	}
+
+	// for non-delete events, verify the owner is still alive
+	// and cleanup orphaned locks if the owner no longer exists
 	data := &lockData{}
 	err := t.col.FindOne(context.Background(), wKey, data)
 	if err != nil {
@@ -91,6 +105,28 @@ func (t *LockTable[K]) Callback(op string, wKey interface{}) {
 			}
 		}
 	}
+}
+
+// ReconcilerGetAllKeys returns all currently held lock keys.
+// Used by the reconciler to enumerate all active locks.
+func (t *LockTable[K]) ReconcilerGetAllKeys() []any {
+	list := []lockKeyOnly[K]{}
+	keys := []any{}
+	err := t.col.FindMany(context.Background(), nil, &list)
+	if err != nil {
+		log.Panicf("got error while fetching all lock keys %s", err)
+	}
+	for _, k := range list {
+		keys = append(keys, &k.Key)
+	}
+	return keys
+}
+
+// RegisterLockRelease allows a reconciler controller to subscribe for lock
+// release notifications. The controller's Reconcile method will be called
+// with the lock key whenever a lock is released.
+func (t *LockTable[K]) RegisterLockRelease(name string, ctrl reconciler.Controller) error {
+	return t.ManagerImpl.Register(name, ctrl)
 }
 
 func (t *LockTable[K]) handleOwnerRelease(op string, wKey interface{}) {
@@ -152,6 +188,26 @@ func LocateLockTable[K any](store db.Store, name string) (*LockTable[K], error) 
 			cancelFn: cancelFn,
 		}
 
+		// set the key type for watch notification decoding
+		var k K
+		kt := reflect.TypeOf(k)
+		if kt == nil {
+			cancelFn()
+			return nil, errors.Wrap(errors.InvalidArgument, "type parameter K must be a concrete type, not an interface")
+		}
+		err := col.SetKeyType(reflect.PointerTo(kt))
+		if err != nil {
+			cancelFn()
+			return nil, errors.Wrapf(errors.GetErrCode(err), "failed to set key type for lock table: %s", err)
+		}
+
+		// initialize the reconciler manager for lock release notifications
+		err = table.ManagerImpl.Initialize(ctx, table)
+		if err != nil {
+			cancelFn()
+			return nil, err
+		}
+
 		matchDeleteStage := mongo.Pipeline{
 			bson.D{{
 				Key: "$match",
@@ -163,7 +219,7 @@ func LocateLockTable[K any](store db.Store, name string) (*LockTable[K], error) 
 		}
 
 		// watch only for delete notification of lock owner
-		err := ownerTable.col.Watch(ctx, matchDeleteStage, table.handleOwnerRelease)
+		err = ownerTable.col.Watch(ctx, matchDeleteStage, table.handleOwnerRelease)
 		if err != nil {
 			cancelFn()
 			return nil, err
