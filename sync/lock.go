@@ -142,6 +142,46 @@ func (t *LockTable[K]) handleOwnerRelease(op string, wKey interface{}) {
 	}
 }
 
+// cleanupOrphanedLocks scans all existing locks and deletes any whose
+// owner no longer exists in the owner-table. This is called once during
+// LocateLockTable initialization to handle stale locks left by replicas
+// that crashed before cleanup could run.
+func (t *LockTable[K]) cleanupOrphanedLocks() {
+	var entries []lockData
+	err := t.col.FindMany(context.Background(), nil, &entries)
+	if err != nil {
+		log.Printf("lock-table: failed to scan locks for orphan cleanup: %v", err)
+		return
+	}
+
+	// Collect unique owners from all locks.
+	owners := make(map[string]bool)
+	for _, e := range entries {
+		if e.Owner != "" {
+			owners[e.Owner] = true
+		}
+	}
+
+	// Check each owner against the owner-table and delete orphans.
+	for ownerName := range owners {
+		oKey := &ownerKey{Name: ownerName}
+		oData := &ownerData{}
+		err := ownerTable.col.FindOne(context.Background(), oKey, oData)
+		if err != nil && errors.IsNotFound(err) {
+			filter := bson.D{{
+				Key:   "owner",
+				Value: ownerName,
+			}}
+			_, delErr := t.col.DeleteMany(t.ctx, filter)
+			if delErr != nil && !errors.IsNotFound(delErr) {
+				log.Printf("lock-table: failed to delete orphaned locks for owner %s: %v", ownerName, delErr)
+			} else {
+				log.Printf("lock-table: cleaned up orphaned locks for owner %s", ownerName)
+			}
+		}
+	}
+}
+
 func (t *LockTable[K]) TryAcquire(ctx context.Context, key *K) (Lock, error) {
 	// if ownertable is not initialized, then lock infra cannot be used
 	if ownerTable == nil || ownerTable.key == nil {
@@ -232,6 +272,13 @@ func LocateLockTable[K any](store db.Store, name string) (*LockTable[K], error) 
 			cancelFn()
 			return nil, err
 		}
+
+		// Scan for pre-existing orphaned locks whose owners no longer
+		// exist. This handles the case where a previous replica died
+		// and its owner entry was already aged out before we started
+		// watching change streams — no change event will fire for
+		// those stale locks, so we must clean them up eagerly.
+		table.cleanupOrphanedLocks()
 
 		lockTables[lockTableKey{store.Name(), name}] = table
 	} else {
