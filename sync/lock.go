@@ -107,19 +107,11 @@ func (t *LockTable[K]) Callback(op string, wKey interface{}) {
 	}
 }
 
-// ReconcilerGetAllKeys returns all currently held lock keys.
-// Used by the reconciler to enumerate all active locks.
+// ReconcilerGetAllKeys returns list as reconciler for lock table
+// should act only on lock release and shouldn't bother about locks
+// currently held.
 func (t *LockTable[K]) ReconcilerGetAllKeys() []any {
-	list := []lockKeyOnly[K]{}
-	keys := []any{}
-	err := t.col.FindMany(context.Background(), nil, &list)
-	if err != nil {
-		log.Panicf("got error while fetching all lock keys %s", err)
-	}
-	for _, k := range list {
-		keys = append(keys, &k.Key)
-	}
-	return keys
+	return []any{}
 }
 
 // RegisterLockRelease allows a reconciler controller to subscribe for lock
