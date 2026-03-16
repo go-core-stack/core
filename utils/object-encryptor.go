@@ -9,14 +9,20 @@ package utils
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"reflect"
 	"sync"
 
 	"github.com/go-core-stack/core/errors"
 )
 
-var nonce = []byte("core nonce")
+// legacyStaticNonce is the nonce that was previously used for all
+// encryptions. Retained only so that DecryptString can fall back to
+// it when decrypting data written before the random-nonce migration.
+var legacyStaticNonce = []byte("core nonce")
 
 // IOEncryptor is responsible for encrypting and decrypting objects
 // while transacting with an IO ensuring capability of handling secret
@@ -36,10 +42,10 @@ type IOEncryptor interface {
 	DecryptString(ciphermessage string) (string, error)
 }
 
-// encrpytor implementation
+// encryptor implementation
 type encryptorImpl struct {
-	gcm   cipher.AEAD
-	nonce []byte
+	gcm         cipher.AEAD
+	legacyNonce []byte // used only for decrypting pre-migration data
 }
 
 // map to hold encryptors for different providers
@@ -91,9 +97,8 @@ func InitializeEncryptor(provider, key string) (IOEncryptor, error) {
 }
 
 func createEncryptor(key []byte) (IOEncryptor, error) {
-	// Format key and nonce
+	// Pad or truncate key to 32 bytes (AES-256).
 	nkey := make([]byte, 32)
-	nnonce := make([]byte, 12)
 	for i := 0; i < 32; i++ {
 		if i < len(key) {
 			nkey[i] = key[i]
@@ -102,11 +107,13 @@ func createEncryptor(key []byte) (IOEncryptor, error) {
 		}
 	}
 
+	// Build the legacy static nonce so old data can still be decrypted.
+	legNonce := make([]byte, 12)
 	for i := 0; i < 12; i++ {
-		if i < len(nonce) {
-			nnonce[i] = nonce[i]
+		if i < len(legacyStaticNonce) {
+			legNonce[i] = legacyStaticNonce[i]
 		} else {
-			nnonce[i] = 10
+			legNonce[i] = 10
 		}
 	}
 
@@ -120,7 +127,7 @@ func createEncryptor(key []byte) (IOEncryptor, error) {
 		return nil, err
 	}
 
-	return &encryptorImpl{aesgcm, nnonce}, nil
+	return &encryptorImpl{gcm: aesgcm, legacyNonce: legNonce}, nil
 }
 
 func (c *encryptorImpl) EncryptObject(o interface{}) (interface{}, error) {
@@ -132,7 +139,13 @@ func (c *encryptorImpl) DecryptObject(o interface{}) (interface{}, error) {
 }
 
 func (c *encryptorImpl) EncryptString(message string) (string, error) {
-	ciphermessage := c.gcm.Seal(nil, c.nonce, []byte(message), nil)
+	nonceSize := c.gcm.NonceSize()
+	nonce := make([]byte, nonceSize)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", fmt.Errorf("generating nonce: %w", err)
+	}
+	// Seal appends ciphertext to nonce, producing: nonce || ciphertext.
+	ciphermessage := c.gcm.Seal(nonce, nonce, []byte(message), nil)
 	return hex.EncodeToString(ciphermessage), nil
 }
 
@@ -142,8 +155,20 @@ func (c *encryptorImpl) DecryptString(ciphermessage string) (string, error) {
 		return "", err
 	}
 
-	message, err := c.gcm.Open(nil, c.nonce, cm, nil)
+	nonceSize := c.gcm.NonceSize()
 
+	// New format: nonce is prepended to the ciphertext.
+	if len(cm) > nonceSize {
+		nonce, ct := cm[:nonceSize], cm[nonceSize:]
+		message, err := c.gcm.Open(nil, nonce, ct, nil)
+		if err == nil {
+			return string(message), nil
+		}
+	}
+
+	// Legacy fallback: data encrypted with the old static nonce
+	// (no prepended nonce — entire payload is ciphertext).
+	message, err := c.gcm.Open(nil, c.legacyNonce, cm, nil)
 	if err != nil {
 		return "", err
 	}
