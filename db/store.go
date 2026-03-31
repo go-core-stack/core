@@ -93,6 +93,11 @@ type StoreCollection interface {
 	// listener is interested about
 	Watch(ctx context.Context, filter any, cb WatchCallbackfn) error
 
+	// Aggregate runs a MongoDB aggregation pipeline against the collection
+	// and decodes all result documents into the provided result pointer
+	// (must be a pointer to a slice). Cursor lifecycle is managed internally.
+	Aggregate(ctx context.Context, pipeline any, result any, opts ...any) error
+
 	// EnsureIndexes creates the specified indexes on the collection if they
 	// don't already exist. This operation is idempotent.
 	EnsureIndexes(ctx context.Context, indexes []IndexDefinition) error
