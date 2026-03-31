@@ -315,6 +315,38 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 	return nil
 }
 
+// Aggregate runs a MongoDB aggregation pipeline against the collection and
+// decodes all result documents into the provided result pointer (must be a
+// pointer to a slice). Cursor lifecycle is managed internally.
+func (c *mongoCollection) Aggregate(ctx context.Context, pipeline any, result any, opts ...any) error {
+	if pipeline == nil {
+		return errors.Wrap(errors.InvalidArgument, "aggregate pipeline must not be nil")
+	}
+	switch pipeline.(type) {
+	case mongo.Pipeline:
+		// valid pipeline type
+	default:
+		return errors.Wrapf(errors.InvalidArgument, "invalid aggregate pipeline type specified, %T", pipeline)
+	}
+	var aggOpts []options.Lister[options.AggregateOptions]
+	for _, opt := range opts {
+		val, ok := opt.(options.Lister[options.AggregateOptions])
+		if !ok {
+			return errors.Wrapf(errors.InvalidArgument, "Invalid option type %T passed to Aggregate", opt)
+		}
+		aggOpts = append(aggOpts, val)
+	}
+	cursor, err := c.col.Aggregate(ctx, pipeline, aggOpts...)
+	if err != nil {
+		return interpretMongoError(err)
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+	if err := cursor.All(ctx, result); err != nil {
+		return err
+	}
+	return nil
+}
+
 // EnsureIndexes creates the specified indexes on the collection if they
 // don't already exist. This operation is idempotent.
 func (c *mongoCollection) EnsureIndexes(ctx context.Context, indexes []IndexDefinition) error {
