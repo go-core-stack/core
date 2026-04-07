@@ -217,13 +217,12 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 	}
 
 	// Preflight validation: if a filter is configured, validate it by running
-	// a lightweight FindMany before proceeding. This catches invalid filters at
+	// a lightweight Count before proceeding. This catches invalid filters at
 	// init time with a proper error return instead of deferring to the panic path
 	// in eager load or ReconcilerGetAllKeys.
+	// Count validates the filter server-side without fetching or decoding documents.
 	if t.filter != nil {
-		var preflight []keyOnly[K]
-		preflightOpts := options.Find().SetLimit(0)
-		if err := col.FindMany(context.Background(), t.filter, &preflight, preflightOpts); err != nil {
+		if _, err := col.Count(context.Background(), t.filter); err != nil {
 			return errors.Wrapf(errors.InvalidArgument, "WithFilter: filter validation failed: %s", err)
 		}
 	}
