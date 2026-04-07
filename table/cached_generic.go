@@ -86,12 +86,31 @@ func WithFilter(filter any) CachedTableOption {
 // The pipeline is passed directly to StoreCollection.Watch and should be a
 // mongo.Pipeline ([]bson.D) with appropriate $match stages.
 //
-// Example usage:
+// WARNING: MongoDB delete events omit the fullDocument field. If your pipeline
+// filters on fullDocument fields (e.g., fullDocument.key.type), delete events
+// will be silently dropped by the change stream and will NOT reach the cache
+// callback. The cache relies on the reconciler to eventually evict stale entries,
+// which means there will be a window of stale data until the next reconciliation
+// sweep. For immediate delete propagation, use one of these approaches:
 //
-//	import (
-//	    "go.mongodb.org/mongo-driver/v2/bson"
-//	    "go.mongodb.org/mongo-driver/v2/mongo"
-//	)
+//   - Use fullDocumentBeforeChange (requires MongoDB 6.0+ with pre-images enabled
+//     on the collection) to match deletes by the document's prior state
+//   - Include documentKey-based matching if the filter field is part of the _id
+//   - Accept the reconciler-based eviction delay for your use case
+//
+// Example with delete handling (MongoDB 6.0+ with pre-images):
+//
+//	pipeline := mongo.Pipeline{
+//	    {{Key: "$match", Value: bson.M{"$or": bson.A{
+//	        bson.M{"operationType": bson.M{"$in": bson.A{"insert", "replace", "update"}},
+//	            "fullDocument.key.type": "slack"},
+//	        bson.M{"operationType": "delete",
+//	            "fullDocumentBeforeChange.key.type": "slack"},
+//	    }}}},
+//	}
+//	err := table.InitializeWithConfig(col, WithWatchPipeline(pipeline))
+//
+// Simple example (deletes handled via reconciler):
 //
 //	pipeline := mongo.Pipeline{
 //	    {{Key: "$match", Value: bson.M{"fullDocument.key.type": "slack"}}},
@@ -146,6 +165,12 @@ func (t *CachedTable[K, E]) Initialize(col db.StoreCollection) error {
 //	err := table.InitializeWithConfig(col, WithReadThrough())
 //
 //	// Filtered eager loading (only load entries matching filter)
+//	// NOTE: For scoped isolation (e.g., type-discriminated caches sharing a
+//	// collection), both WithFilter and WithWatchPipeline should typically be
+//	// set together to keep the cache scope consistent. WithFilter scopes the
+//	// initial load and reconciler, while WithWatchPipeline scopes the change
+//	// stream. Using only one may cause cache drift — see each option's
+//	// documentation for details on partial configuration behavior.
 //	err := table.InitializeWithConfig(col,
 //	    WithFilter(bson.M{"key.type": "slack"}),
 //	    WithWatchPipeline(mongo.Pipeline{
@@ -191,6 +216,18 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 		return err
 	}
 
+	// Preflight validation: if a filter is configured, validate it by running
+	// a lightweight FindMany before proceeding. This catches invalid filters at
+	// init time with a proper error return instead of deferring to the panic path
+	// in eager load or ReconcilerGetAllKeys.
+	if t.filter != nil {
+		var preflight []keyOnly[K]
+		preflightOpts := options.Find().SetLimit(0)
+		if err := col.FindMany(context.Background(), t.filter, &preflight, preflightOpts); err != nil {
+			return errors.Wrapf(errors.InvalidArgument, "WithFilter: filter validation failed: %s", err)
+		}
+	}
+
 	// Register callback for collection changes, using watch pipeline if configured
 	err = col.Watch(context.Background(), t.watchPipeline, t.callback)
 	if err != nil {
@@ -210,7 +247,7 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 		list := []keyOnly[K]{}
 		err = t.col.FindMany(context.Background(), t.filter, &list)
 		if err != nil {
-			log.Panicf("got error while fetching all keys %s", err)
+			return errors.Wrapf(errors.Internal, "failed to eager-load keys: %s", err)
 		}
 		for _, k := range list {
 			entry, err := t.DBFind(context.Background(), &k.Key)
