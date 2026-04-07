@@ -246,7 +246,7 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 		list := []keyOnly[K]{}
 		err = t.col.FindMany(context.Background(), t.filter, &list)
 		if err != nil {
-			return errors.Wrapf(errors.Internal, "failed to eager-load keys: %s", err)
+			return errors.Wrapf(errors.Unknown, "failed to eager-load keys: %s", err)
 		}
 		for _, k := range list {
 			entry, err := t.DBFind(context.Background(), &k.Key)
