@@ -587,3 +587,10 @@ func (c *mongoClient) GetCollection(dbName, col string) StoreCollection {
 func (c *mongoClient) HealthCheck(ctx context.Context) error {
 	return c.client.Ping(ctx, nil)
 }
+
+// Close disconnects the underlying MongoDB driver client, releasing its
+// connection pool. Implements io.Closer so callers can type-assert
+// StoreClient to io.Closer for graceful shutdown.
+func (c *mongoClient) Close() error {
+	return c.client.Disconnect(context.Background())
+}
