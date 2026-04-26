@@ -9,7 +9,7 @@ package utils
 //	ptr := utils.Pointer(42) // *int pointing to 42
 //	ptr := utils.Pointer("hello") // *string pointing to "hello"
 func Pointer[T any](v T) *T {
-	return &v
+	return &v1
 }
 
 // Dereference returns the value of a pointer, or the zero value if the pointer is nil.
