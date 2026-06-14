@@ -28,4 +28,9 @@ func Test_ErrorValidations(t *testing.T) {
 	if !IsNotFound(err) {
 		t.Errorf("expected error type Not Found")
 	}
+
+	err = Wrap(Internal, "internal failure")
+	if !IsInternal(err) {
+		t.Errorf("expected error type Internal")
+	}
 }

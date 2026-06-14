@@ -223,7 +223,10 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 	// Count validates the filter server-side without fetching or decoding documents.
 	if t.filter != nil {
 		if _, err := col.Count(context.Background(), t.filter); err != nil {
-			return errors.Wrapf(errors.InvalidArgument, "WithFilter: filter validation failed: %s", err)
+			if errors.GetErrCode(err) != errors.Unknown {
+				return err
+			}
+			return errors.Wrapf(errors.Internal, "WithFilter preflight count failed: %s", err)
 		}
 	}
 
@@ -246,7 +249,10 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 		list := []keyOnly[K]{}
 		err = t.col.FindMany(context.Background(), t.filter, &list)
 		if err != nil {
-			return errors.Wrapf(errors.Unknown, "failed to eager-load keys: %s", err)
+			if errors.GetErrCode(err) != errors.Unknown {
+				return err
+			}
+			return errors.Wrapf(errors.Internal, "failed to eager-load keys: %s", err)
 		}
 		for _, k := range list {
 			entry, err := t.DBFind(context.Background(), &k.Key)
