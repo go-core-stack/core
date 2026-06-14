@@ -293,6 +293,9 @@ func (t *Table[K, E]) Update(ctx context.Context, key *K, entry *E) error {
 
 // Find retrieves an entry by key.
 // Returns the entry and error if not found or if the table is not initialized.
+// Preserves error codes from the db layer: a genuine missing document returns
+// NotFound, while transient storage failures (timeouts, connection errors)
+// return Internal so callers can distinguish and retry appropriately.
 func (t *Table[K, E]) Find(ctx context.Context, key *K) (*E, error) {
 	var data E
 	if t.col == nil {
@@ -300,13 +303,22 @@ func (t *Table[K, E]) Find(ctx context.Context, key *K) (*E, error) {
 	}
 	err := t.col.FindOne(ctx, key, &data)
 	if err != nil {
-		return nil, errors.Wrapf(errors.NotFound, "failed to find entry with key %v: %s", key, err)
+		// If the db layer already assigned a recognized error code
+		// (e.g., NotFound from interpretMongoError for ErrNoDocuments),
+		// pass it through unchanged. Otherwise wrap as Internal so
+		// callers can distinguish transient failures from true misses.
+		if errors.GetErrCode(err) != errors.Unknown {
+			return nil, err
+		}
+		return nil, errors.Wrapf(errors.Internal, "failed to find entry with key %v: %s", key, err)
 	}
-	return &data, err
+	return &data, nil
 }
 
 // FindMany retrieves multiple entries matching the provided filter.
 // Returns a slice of entries and error if none found or if the table is not initialized.
+// Preserves error codes from the db layer so callers can distinguish transient
+// storage failures from genuine empty results.
 func (t *Table[K, E]) FindMany(ctx context.Context, filter any, offset, limit int32) ([]*E, error) {
 	if t.col == nil {
 		return nil, errors.Wrapf(errors.InvalidArgument, "Table not initialized")
@@ -315,7 +327,10 @@ func (t *Table[K, E]) FindMany(ctx context.Context, filter any, offset, limit in
 	opts := options.Find().SetLimit(int64(limit)).SetSkip(int64(offset))
 	err := t.col.FindMany(ctx, filter, &data, opts)
 	if err != nil {
-		return nil, errors.Wrapf(errors.NotFound, "failed to find any entry: %s", err)
+		if errors.GetErrCode(err) != errors.Unknown {
+			return nil, err
+		}
+		return nil, errors.Wrapf(errors.Internal, "failed to find entries: %s", err)
 	}
 
 	return data, nil
@@ -324,6 +339,8 @@ func (t *Table[K, E]) FindMany(ctx context.Context, filter any, offset, limit in
 // FindManyWithOpts retrieves multiple entries matching the provided filter with optional parameters.
 // Supports pagination (limit, offset) and sorting through functional options.
 // Returns a slice of entries and error if none found or if the table is not initialized.
+// Preserves error codes from the db layer so callers can distinguish transient
+// storage failures from genuine empty results.
 //
 // Example usage:
 //
@@ -358,7 +375,10 @@ func (t *Table[K, E]) FindManyWithOpts(ctx context.Context, filter any, opts ...
 	var data []*E
 	err := t.col.FindMany(ctx, filter, &data, mongoOpts)
 	if err != nil {
-		return nil, errors.Wrapf(errors.NotFound, "failed to find any entry: %s", err)
+		if errors.GetErrCode(err) != errors.Unknown {
+			return nil, err
+		}
+		return nil, errors.Wrapf(errors.Internal, "failed to find entries: %s", err)
 	}
 
 	return data, nil

@@ -86,3 +86,9 @@ func IsUnauthorized(err error) bool {
 func IsForbidden(err error) bool {
 	return GetErrCode(err) == Forbidden
 }
+
+// IsInternal returns true if err
+// is due to an internal/transient failure
+func IsInternal(err error) bool {
+	return GetErrCode(err) == Internal
+}

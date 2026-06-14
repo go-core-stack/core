@@ -25,4 +25,7 @@ const (
 
 	// Forbidden action error
 	Forbidden ErrCode = 5
+
+	// Internal error (e.g., transient storage failure)
+	Internal ErrCode = 6
 )
