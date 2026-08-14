@@ -8,6 +8,7 @@ package db
 
 import (
 	"context"
+	base "errors"
 	"log"
 	"net"
 	"reflect"
@@ -30,13 +31,51 @@ type mongoCollection struct {
 	keyType reflect.Type
 }
 
+// isTransientMongoError reports whether err represents a transient or
+// infrastructure-level failure rather than a definitive answer from the
+// server. These are failures where the operation could not be completed -
+// the server was unreachable, server selection timed out, the request
+// deadline elapsed, or an underlying network error occurred - and are
+// typically safe to retry. They must NOT be conflated with a NotFound.
+func isTransientMongoError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// context cancellation / deadline exceeded surfaces on client timeouts
+	// and server-selection timeouts.
+	if base.Is(err, context.DeadlineExceeded) || base.Is(err, context.Canceled) {
+		return true
+	}
+	// driver-level classification for network errors and timeouts (covers
+	// server-selection timeout and connection failures).
+	if mongo.IsNetworkError(err) || mongo.IsTimeout(err) {
+		return true
+	}
+	// bare network errors that may not carry a driver error label.
+	var netErr net.Error
+	if base.As(err, &netErr) {
+		return true
+	}
+	return false
+}
+
 // interprets mongo db error and returns library parsable error codes
 func interpretMongoError(err error) error {
+	if err == nil {
+		return nil
+	}
 	if mongo.IsDuplicateKeyError(err) {
 		return errors.Wrap(errors.AlreadyExists, err.Error())
 	}
 	if err == mongo.ErrNoDocuments {
 		return errors.Wrap(errors.NotFound, err.Error())
+	}
+	// Transient/infrastructure failures (unreachable server, server-selection
+	// timeout, deadline exceeded, network error) are classified as Unavailable
+	// so callers can distinguish them from a genuinely absent document. This is
+	// checked before falling through to the raw error so the class is not lost.
+	if isTransientMongoError(err) {
+		return errors.Wrap(errors.Unavailable, err.Error())
 	}
 	return err
 }
@@ -168,7 +207,7 @@ func (c *mongoCollection) FindMany(ctx context.Context, filter any, data any, op
 		return interpretMongoError(err)
 	}
 	if err = cursor.All(ctx, data); err != nil {
-		return err
+		return interpretMongoError(err)
 	}
 	return nil
 }
@@ -342,7 +381,7 @@ func (c *mongoCollection) Aggregate(ctx context.Context, pipeline any, result an
 	}
 	defer func() { _ = cursor.Close(ctx) }()
 	if err := cursor.All(ctx, result); err != nil {
-		return err
+		return interpretMongoError(err)
 	}
 	return nil
 }
