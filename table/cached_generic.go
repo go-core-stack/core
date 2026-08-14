@@ -22,6 +22,21 @@ type CachedTableConfig struct {
 	// instead of eagerly loading all entries at initialization.
 	// Default: false (eager loading)
 	ReadThrough bool
+
+	// Filter specifies an optional filter for the initial eager load (FindMany)
+	// and for ReconcilerGetAllKeys. When set, only entries matching this filter
+	// are loaded into the cache and enumerated by the reconciler.
+	// The filter is passed directly to StoreCollection.FindMany.
+	// Default: nil (all entries)
+	Filter any
+
+	// WatchPipeline specifies an optional aggregation pipeline for the change
+	// stream (Watch). When set, only change events matching the pipeline are
+	// delivered to the cache callback.
+	// The pipeline is passed directly to StoreCollection.Watch and should be
+	// a mongo.Pipeline ([]bson.D) with $match stages or similar.
+	// Default: nil (all change events)
+	WatchPipeline any
 }
 
 // CachedTableOption is a functional option for configuring CachedTable.
@@ -33,6 +48,77 @@ type CachedTableOption func(*CachedTableConfig)
 func WithReadThrough() CachedTableOption {
 	return func(cfg *CachedTableConfig) {
 		cfg.ReadThrough = true
+	}
+}
+
+// WithFilter sets a filter for the initial eager load and ReconcilerGetAllKeys.
+// Only entries matching this filter will be loaded into the cache at initialization
+// and returned when the reconciler enumerates all keys.
+//
+// This is useful when multiple CachedTable instances share the same underlying
+// MongoDB collection but each instance should only manage a subset of documents
+// (e.g., filtering by a type discriminator field).
+//
+// The filter is passed directly to StoreCollection.FindMany and should be a
+// valid MongoDB filter document (e.g., bson.M{"key.type": "slack"}).
+//
+// Example usage:
+//
+//	import "go.mongodb.org/mongo-driver/v2/bson"
+//
+//	err := table.InitializeWithConfig(col,
+//	    WithFilter(bson.M{"key.type": "slack"}))
+func WithFilter(filter any) CachedTableOption {
+	return func(cfg *CachedTableConfig) {
+		cfg.Filter = filter
+	}
+}
+
+// WithWatchPipeline sets an aggregation pipeline for the change stream.
+// Only change events matching the pipeline will be delivered to the cache
+// callback, preventing the cache from receiving and processing irrelevant
+// change events.
+//
+// This is useful when multiple CachedTable instances share the same underlying
+// MongoDB collection but each instance should only react to changes for its
+// own subset of documents.
+//
+// The pipeline is passed directly to StoreCollection.Watch and should be a
+// mongo.Pipeline ([]bson.D) with appropriate $match stages.
+//
+// WARNING: MongoDB delete events omit the fullDocument field. If your pipeline
+// filters on fullDocument fields (e.g., fullDocument.key.type), delete events
+// will be silently dropped by the change stream and will NOT reach the cache
+// callback. The cache relies on the reconciler to eventually evict stale entries,
+// which means there will be a window of stale data until the next reconciliation
+// sweep. For immediate delete propagation, use one of these approaches:
+//
+//   - Use fullDocumentBeforeChange (requires MongoDB 6.0+ with pre-images enabled
+//     on the collection) to match deletes by the document's prior state
+//   - Include documentKey-based matching if the filter field is part of the _id
+//   - Accept the reconciler-based eviction delay for your use case
+//
+// Example with delete handling (MongoDB 6.0+ with pre-images):
+//
+//	pipeline := mongo.Pipeline{
+//	    {{Key: "$match", Value: bson.M{"$or": bson.A{
+//	        bson.M{"operationType": bson.M{"$in": bson.A{"insert", "replace", "update"}},
+//	            "fullDocument.key.type": "slack"},
+//	        bson.M{"operationType": "delete",
+//	            "fullDocumentBeforeChange.key.type": "slack"},
+//	    }}}},
+//	}
+//	err := table.InitializeWithConfig(col, WithWatchPipeline(pipeline))
+//
+// Simple example (deletes handled via reconciler):
+//
+//	pipeline := mongo.Pipeline{
+//	    {{Key: "$match", Value: bson.M{"fullDocument.key.type": "slack"}}},
+//	}
+//	err := table.InitializeWithConfig(col, WithWatchPipeline(pipeline))
+func WithWatchPipeline(pipeline any) CachedTableOption {
+	return func(cfg *CachedTableConfig) {
+		cfg.WatchPipeline = pipeline
 	}
 }
 
@@ -48,10 +134,12 @@ func WithReadThrough() CachedTableOption {
 // E: Entry type (must NOT be a pointer type)
 type CachedTable[K comparable, E any] struct {
 	reconciler.ManagerImpl
-	cacheMu     sync.RWMutex
-	cache       map[K]*E
-	col         db.StoreCollection
-	readThrough bool
+	cacheMu       sync.RWMutex
+	cache         map[K]*E
+	col           db.StoreCollection
+	readThrough   bool
+	filter        any // optional filter for FindMany (eager load + reconciler)
+	watchPipeline any // optional pipeline for Watch (change stream)
 }
 
 // Initialize sets up the Table with the provided db.StoreCollection using default configuration.
@@ -76,6 +164,19 @@ func (t *CachedTable[K, E]) Initialize(col db.StoreCollection) error {
 //	// Read-through caching
 //	err := table.InitializeWithConfig(col, WithReadThrough())
 //
+//	// Filtered eager loading (only load entries matching filter)
+//	// NOTE: For scoped isolation (e.g., type-discriminated caches sharing a
+//	// collection), both WithFilter and WithWatchPipeline should typically be
+//	// set together to keep the cache scope consistent. WithFilter scopes the
+//	// initial load and reconciler, while WithWatchPipeline scopes the change
+//	// stream. Using only one may cause cache drift — see each option's
+//	// documentation for details on partial configuration behavior.
+//	err := table.InitializeWithConfig(col,
+//	    WithFilter(bson.M{"key.type": "slack"}),
+//	    WithWatchPipeline(mongo.Pipeline{
+//	        {{Key: "$match", Value: bson.M{"fullDocument.key.type": "slack"}}},
+//	    }))
+//
 // Returns an error if the table is already initialized, the entry or key type is a pointer,
 // or if the collection setup fails.
 func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ...CachedTableOption) error {
@@ -85,12 +186,16 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 
 	// Apply configuration options
 	config := &CachedTableConfig{
-		ReadThrough: false, // Default to eager loading
+		ReadThrough:   false, // Default to eager loading
+		Filter:        nil,   // Default to all entries
+		WatchPipeline: nil,   // Default to all change events
 	}
 	for _, opt := range opts {
 		opt(config)
 	}
 	t.readThrough = config.ReadThrough
+	t.filter = config.Filter
+	t.watchPipeline = config.WatchPipeline
 
 	if t.cache == nil {
 		t.cache = map[K]*E{}
@@ -111,8 +216,19 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 		return err
 	}
 
-	// Register callback for collection changes
-	err = col.Watch(context.Background(), nil, t.callback)
+	// Preflight validation: if a filter is configured, validate it by running
+	// a lightweight Count before proceeding. This catches invalid filters at
+	// init time with a proper error return instead of deferring to the panic path
+	// in eager load or ReconcilerGetAllKeys.
+	// Count validates the filter server-side without fetching or decoding documents.
+	if t.filter != nil {
+		if _, err := col.Count(context.Background(), t.filter); err != nil {
+			return errors.Wrapf(errors.InvalidArgument, "WithFilter: filter validation failed: %s", err)
+		}
+	}
+
+	// Register callback for collection changes, using watch pipeline if configured
+	err = col.Watch(context.Background(), t.watchPipeline, t.callback)
 	if err != nil {
 		return err
 	}
@@ -128,9 +244,9 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 	// Only eagerly load entries if read-through is disabled
 	if !t.readThrough {
 		list := []keyOnly[K]{}
-		err = t.col.FindMany(context.Background(), nil, &list)
+		err = t.col.FindMany(context.Background(), t.filter, &list)
 		if err != nil {
-			log.Panicf("got error while fetching all keys %s", err)
+			return errors.Wrapf(errors.Unknown, "failed to eager-load keys: %s", err)
 		}
 		for _, k := range list {
 			entry, err := t.DBFind(context.Background(), &k.Key)
@@ -159,16 +275,20 @@ func (t *CachedTable[K, E]) callback(op string, wKey any) {
 		entry, err := t.DBFind(context.Background(), key)
 		if err != nil {
 			if errors.IsNotFound(err) {
-				// consider delete scenario
+				// Definitive miss: the row is genuinely absent (delete
+				// scenario). Safe to evict from the cache.
 				func() {
 					t.cacheMu.Lock()
 					defer t.cacheMu.Unlock()
 					delete(t.cache, *key)
 				}()
 			} else {
-				// this should not happen in regular scenarios
-				// log and return from here
-				log.Printf("failed to find an entry, got error: %s", err)
+				// Transient (Unavailable) or unknown failure: the DB could
+				// not be consulted authoritatively. Do NOT evict - dropping a
+				// live cache row on a transient blip would surface a spurious
+				// miss until the next reconciler sweep. Retain the existing
+				// cached value and let the reconciler converge.
+				log.Printf("failed to refresh entry on change event, retaining cached value, got error: %s", err)
 			}
 		} else {
 			func() {
@@ -182,11 +302,12 @@ func (t *CachedTable[K, E]) callback(op string, wKey any) {
 }
 
 // ReconcilerGetAllKeys returns all keys in the table.
+// If a filter was configured via WithFilter, only keys matching the filter are returned.
 // Used by the reconciler to enumerate all managed entries.
 func (t *CachedTable[K, E]) ReconcilerGetAllKeys() []any {
 	list := []keyOnly[K]{}
 	keys := []any{}
-	err := t.col.FindMany(context.Background(), nil, &list)
+	err := t.col.FindMany(context.Background(), t.filter, &list)
 	if err != nil {
 		log.Panicf("got error while fetching all keys %s", err)
 	}
@@ -263,8 +384,19 @@ func (t *CachedTable[K, E]) Find(ctx context.Context, key *K) (*E, error) {
 	return dbEntry, nil
 }
 
-// DBFind retrieves an entry by key from the Database
-// Returns the entry and error if not found or if the table is not initialized.
+// DBFind retrieves an entry by key from the Database.
+//
+// DBFind preserves the error class returned by the db layer instead of
+// flattening every failure to NotFound. The db layer classifies failures as
+// NotFound (document genuinely absent), Unavailable (transient/infrastructure
+// failure such as an unreachable server or timeout), AlreadyExists, etc.
+// Recognized classes are propagated as-is so callers can distinguish a real
+// miss from a transient blip; only genuinely unknown errors are wrapped, and
+// they are wrapped as Unknown (never NotFound) so a non-miss failure can never
+// masquerade as a missing row.
+//
+// Returns the entry and error if not found, on a backend failure, or if the
+// table is not initialized.
 func (t *CachedTable[K, E]) DBFind(ctx context.Context, key *K) (*E, error) {
 	var data E
 	if t.col == nil {
@@ -272,9 +404,17 @@ func (t *CachedTable[K, E]) DBFind(ctx context.Context, key *K) (*E, error) {
 	}
 	err := t.col.FindOne(ctx, key, &data)
 	if err != nil {
-		return nil, errors.Wrapf(errors.NotFound, "failed to find entry with key %v: %s", key, err)
+		// Preserve recognized error classes (NotFound, Unavailable,
+		// AlreadyExists, InvalidArgument, ...) so callers - notably the change
+		// stream callback - can tell a genuine miss apart from a transient
+		// backend failure. Only wrap truly unclassified errors, and wrap them
+		// as Unknown rather than NotFound.
+		if errors.GetErrCode(err) != errors.Unknown {
+			return nil, err
+		}
+		return nil, errors.Wrapf(errors.Unknown, "failed to find entry with key %v: %s", key, err)
 	}
-	return &data, err
+	return &data, nil
 }
 
 // DBFindMany retrieves multiple entries matching the provided filter from database.
