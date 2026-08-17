@@ -81,17 +81,17 @@ func interpretMongoError(err error) error {
 		return nil
 	}
 	if mongo.IsDuplicateKeyError(err) {
-		return errors.Wrap(errors.AlreadyExists, err.Error())
+		return errors.WrapErr(errors.AlreadyExists, err)
 	}
 	if base.Is(err, mongo.ErrNoDocuments) {
-		return errors.Wrap(errors.NotFound, err.Error())
+		return errors.WrapErr(errors.NotFound, err)
 	}
 	// Transient/infrastructure failures (unreachable server, server-selection
 	// timeout, deadline exceeded, network error) are classified as Unavailable
 	// so callers can distinguish them from a genuinely absent document. This is
 	// checked before falling through to the raw error so the class is not lost.
 	if isTransientMongoError(err) {
-		return errors.Wrap(errors.Unavailable, err.Error())
+		return errors.WrapErr(errors.Unavailable, err)
 	}
 	return err
 }
