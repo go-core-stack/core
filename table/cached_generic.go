@@ -130,6 +130,24 @@ func WithWatchPipeline(pipeline any) CachedTableOption {
 // It also ensures sanity checks and provides common functionality for database-backed
 // tables.
 //
+// # Cache staleness contract
+//
+// The cache is refreshed from change-stream events via callback. When a change
+// event is observed, callback re-reads the authoritative row via DBFind and
+// updates the cache. If that re-read fails with a transient/infrastructure
+// error (Unavailable) - rather than a genuine NotFound - callback deliberately
+// RETAINS the existing cached value instead of evicting it, to avoid surfacing
+// a spurious miss on a momentary DB blip. As a consequence, after a transient
+// failure the cache may knowingly hold a stale entry until the change stream
+// delivers a subsequent event for that key.
+//
+// Convergence is driven by the reconciler, which requeues and re-runs
+// Reconcile(key) - it does NOT re-run callback or DBFind on its own. Therefore
+// a reconciler that reads via Find(key) will keep observing the same retained
+// (possibly stale) value across retries and will not converge on its own. A
+// reconciler that requires authoritative, up-to-date state after a transient
+// failure MUST call DBFind(key) explicitly rather than relying on Find(key).
+//
 // K: Key type (must NOT be a pointer type, typically a struct or primitive)
 // E: Entry type (must NOT be a pointer type)
 type CachedTable[K comparable, E any] struct {
@@ -268,6 +286,13 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 }
 
 // callback is invoked on collection changes and notifies the reconciler.
+//
+// On each change event it re-reads the authoritative row via DBFind and
+// reconciles the cache. See the CachedTable type documentation for the cache
+// staleness contract: on a transient (Unavailable) or unknown failure the
+// existing cached value is retained rather than evicted, so the cache may
+// knowingly hold a stale entry until a later event arrives; reconcilers that
+// need authoritative state must use DBFind rather than Find.
 func (t *CachedTable[K, E]) callback(op string, wKey any) {
 	key, ok := wKey.(*K)
 	// failure should logically never happen, but lets handle just incase
@@ -275,16 +300,20 @@ func (t *CachedTable[K, E]) callback(op string, wKey any) {
 		entry, err := t.DBFind(context.Background(), key)
 		if err != nil {
 			if errors.IsNotFound(err) {
-				// consider delete scenario
+				// Definitive miss: the row is genuinely absent (delete
+				// scenario). Safe to evict from the cache.
 				func() {
 					t.cacheMu.Lock()
 					defer t.cacheMu.Unlock()
 					delete(t.cache, *key)
 				}()
 			} else {
-				// this should not happen in regular scenarios
-				// log and return from here
-				log.Printf("failed to find an entry, got error: %s", err)
+				// Transient (Unavailable) or unknown failure: the DB could
+				// not be consulted authoritatively. Do NOT evict - dropping a
+				// live cache row on a transient blip would surface a spurious
+				// miss until the next reconciler sweep. Retain the existing
+				// cached value and let the reconciler converge.
+				log.Printf("failed to refresh entry on change event, retaining cached value, got error: %s", err)
 			}
 		} else {
 			func() {
@@ -343,6 +372,15 @@ func (t *CachedTable[K, E]) Update(ctx context.Context, key *K, entry *E) error 
 // Find retrieves an entry by key from the Cache.
 // If read-through caching is enabled and the entry is not in cache,
 // it will load the entry from the database and populate the cache.
+//
+// Note on staleness: Find serves whatever value is currently cached. After a
+// transient (Unavailable) refresh failure in callback, that value may be a
+// knowingly retained stale entry (see the CachedTable type documentation and
+// callback). A caller that requires authoritative, up-to-date state after a
+// suspected transient failure must call DBFind directly - the reconciler's
+// requeue re-runs Reconcile(key), not callback/DBFind, so repeated Find calls
+// will keep returning the same retained value.
+//
 // Returns the entry and error if not found or if the table is not initialized.
 func (t *CachedTable[K, E]) Find(ctx context.Context, key *K) (*E, error) {
 	// First, try to find in cache with read lock
@@ -380,8 +418,19 @@ func (t *CachedTable[K, E]) Find(ctx context.Context, key *K) (*E, error) {
 	return dbEntry, nil
 }
 
-// DBFind retrieves an entry by key from the Database
-// Returns the entry and error if not found or if the table is not initialized.
+// DBFind retrieves an entry by key from the Database.
+//
+// DBFind preserves the error class returned by the db layer instead of
+// flattening every failure to NotFound. The db layer classifies failures as
+// NotFound (document genuinely absent), Unavailable (transient/infrastructure
+// failure such as an unreachable server or timeout), AlreadyExists, etc.
+// Recognized classes are propagated as-is so callers can distinguish a real
+// miss from a transient blip; only genuinely unknown errors are wrapped, and
+// they are wrapped as Unknown (never NotFound) so a non-miss failure can never
+// masquerade as a missing row.
+//
+// Returns the entry and error if not found, on a backend failure, or if the
+// table is not initialized.
 func (t *CachedTable[K, E]) DBFind(ctx context.Context, key *K) (*E, error) {
 	var data E
 	if t.col == nil {
@@ -389,13 +438,22 @@ func (t *CachedTable[K, E]) DBFind(ctx context.Context, key *K) (*E, error) {
 	}
 	err := t.col.FindOne(ctx, key, &data)
 	if err != nil {
-		return nil, errors.Wrapf(errors.NotFound, "failed to find entry with key %v: %s", key, err)
+		return nil, preserveErrClass(err, "failed to find entry with key %v", key)
 	}
-	return &data, err
+	return &data, nil
 }
 
 // DBFindMany retrieves multiple entries matching the provided filter from database.
-// Returns a slice of entries and error if none found or if the table is not initialized.
+//
+// Like DBFind, it preserves the error class from the db layer. The underlying
+// cursor decode returns an empty slice (not an error) when the filter matches
+// no documents, so a non-nil error here always denotes a genuine backend
+// failure - never an empty result. Recognized classes (Unavailable,
+// InvalidArgument, ...) are propagated as-is; only unclassified errors are
+// wrapped, as Unknown.
+//
+// Returns a slice of entries and error on a backend failure or if the table is
+// not initialized.
 func (t *CachedTable[K, E]) DBFindMany(ctx context.Context, filter any, offset, limit int32) ([]*E, error) {
 	if t.col == nil {
 		return nil, errors.Wrapf(errors.InvalidArgument, "Table not initialized")
@@ -404,7 +462,7 @@ func (t *CachedTable[K, E]) DBFindMany(ctx context.Context, filter any, offset, 
 	opts := options.Find().SetLimit(int64(limit)).SetSkip(int64(offset))
 	err := t.col.FindMany(ctx, filter, &data, opts)
 	if err != nil {
-		return nil, errors.Wrapf(errors.NotFound, "failed to find any entry: %s", err)
+		return nil, preserveErrClass(err, "failed to find entries")
 	}
 
 	return data, nil
@@ -412,7 +470,9 @@ func (t *CachedTable[K, E]) DBFindMany(ctx context.Context, filter any, offset, 
 
 // DBFindManyWithOpts retrieves multiple entries matching the provided filter from database with optional parameters.
 // Supports pagination (limit, offset) and sorting through functional options.
-// Returns a slice of entries and error if none found or if the table is not initialized.
+//
+// Like DBFindMany, it preserves the error class from the db layer and returns
+// an empty slice (not an error) when the filter matches no documents.
 //
 // Example usage:
 //
@@ -447,7 +507,7 @@ func (t *CachedTable[K, E]) DBFindManyWithOpts(ctx context.Context, filter any, 
 	var data []*E
 	err := t.col.FindMany(ctx, filter, &data, mongoOpts)
 	if err != nil {
-		return nil, errors.Wrapf(errors.NotFound, "failed to find any entry: %s", err)
+		return nil, preserveErrClass(err, "failed to find entries")
 	}
 
 	return data, nil

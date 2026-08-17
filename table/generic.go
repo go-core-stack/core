@@ -5,6 +5,7 @@ package table
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"reflect"
 
@@ -186,6 +187,26 @@ func WithSort(sort ...SortOption) FindOption {
 	}
 }
 
+// preserveErrClass normalizes an error returned by the db layer so that the
+// table layer never masquerades a non-miss failure as a NotFound.
+//
+// The db layer classifies failures into recognized classes - NotFound
+// (genuinely absent), Unavailable (transient/infrastructure failure such as an
+// unreachable server or timeout), AlreadyExists, InvalidArgument, etc. Those
+// recognized classes are propagated as-is so callers can distinguish a real
+// miss from a transient blip. Only genuinely unclassified errors are wrapped,
+// and they are wrapped as Unknown (never NotFound) so a backend failure can
+// never look like a missing row.
+//
+// format/args provide caller context that is only attached when wrapping an
+// otherwise unclassified (Unknown) error.
+func preserveErrClass(err error, format string, args ...any) error {
+	if errors.GetErrCode(err) != errors.Unknown {
+		return err
+	}
+	return errors.Wrapf(errors.Unknown, "%s: %s", fmt.Sprintf(format, args...), err)
+}
+
 // Table is a generic table type providing common functions and types to specific
 // structures each table is built using. It ensures sanity checks and provides
 // common functionality for database-backed tables.
@@ -292,7 +313,17 @@ func (t *Table[K, E]) Update(ctx context.Context, key *K, entry *E) error {
 }
 
 // Find retrieves an entry by key.
-// Returns the entry and error if not found or if the table is not initialized.
+//
+// Find preserves the error class returned by the db layer instead of
+// flattening every failure to NotFound. A genuinely absent row returns
+// NotFound; a transient/infrastructure failure (unreachable server, timeout)
+// returns Unavailable, so callers can tell a real miss apart from a transient
+// blip and avoid destructive actions on the latter. Only genuinely
+// unclassified errors are wrapped, and they are wrapped as Unknown (never
+// NotFound).
+//
+// Returns the entry and error if not found, on a backend failure, or if the
+// table is not initialized.
 func (t *Table[K, E]) Find(ctx context.Context, key *K) (*E, error) {
 	var data E
 	if t.col == nil {
@@ -300,13 +331,22 @@ func (t *Table[K, E]) Find(ctx context.Context, key *K) (*E, error) {
 	}
 	err := t.col.FindOne(ctx, key, &data)
 	if err != nil {
-		return nil, errors.Wrapf(errors.NotFound, "failed to find entry with key %v: %s", key, err)
+		return nil, preserveErrClass(err, "failed to find entry with key %v", key)
 	}
-	return &data, err
+	return &data, nil
 }
 
 // FindMany retrieves multiple entries matching the provided filter.
-// Returns a slice of entries and error if none found or if the table is not initialized.
+//
+// FindMany preserves the error class returned by the db layer. Note that the
+// underlying cursor decode returns an empty slice (not an error) for a filter
+// that matches no documents, so a non-nil error here always denotes a genuine
+// backend failure - never an empty result. Recognized classes (Unavailable,
+// InvalidArgument, ...) are propagated as-is; only unclassified errors are
+// wrapped, as Unknown.
+//
+// Returns a slice of entries and error on a backend failure or if the table is
+// not initialized.
 func (t *Table[K, E]) FindMany(ctx context.Context, filter any, offset, limit int32) ([]*E, error) {
 	if t.col == nil {
 		return nil, errors.Wrapf(errors.InvalidArgument, "Table not initialized")
@@ -315,7 +355,7 @@ func (t *Table[K, E]) FindMany(ctx context.Context, filter any, offset, limit in
 	opts := options.Find().SetLimit(int64(limit)).SetSkip(int64(offset))
 	err := t.col.FindMany(ctx, filter, &data, opts)
 	if err != nil {
-		return nil, errors.Wrapf(errors.NotFound, "failed to find any entry: %s", err)
+		return nil, preserveErrClass(err, "failed to find entries")
 	}
 
 	return data, nil
@@ -323,7 +363,9 @@ func (t *Table[K, E]) FindMany(ctx context.Context, filter any, offset, limit in
 
 // FindManyWithOpts retrieves multiple entries matching the provided filter with optional parameters.
 // Supports pagination (limit, offset) and sorting through functional options.
-// Returns a slice of entries and error if none found or if the table is not initialized.
+//
+// Like FindMany, it preserves the error class returned by the db layer and
+// returns an empty slice (not an error) when the filter matches no documents.
 //
 // Example usage:
 //
@@ -358,7 +400,7 @@ func (t *Table[K, E]) FindManyWithOpts(ctx context.Context, filter any, opts ...
 	var data []*E
 	err := t.col.FindMany(ctx, filter, &data, mongoOpts)
 	if err != nil {
-		return nil, errors.Wrapf(errors.NotFound, "failed to find any entry: %s", err)
+		return nil, preserveErrClass(err, "failed to find entries")
 	}
 
 	return data, nil

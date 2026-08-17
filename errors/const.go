@@ -25,4 +25,12 @@ const (
 
 	// Forbidden action error
 	Forbidden ErrCode = 5
+
+	// Unavailable indicates a transient or infrastructure-level failure,
+	// e.g. the backing datastore is unreachable, a request timed out, or a
+	// network error occurred. Unlike NotFound, an Unavailable error does NOT
+	// mean the requested item is absent - the request could not be completed
+	// and is typically safe to retry. Callers must not treat Unavailable as a
+	// permanent, negative result.
+	Unavailable ErrCode = 6
 )

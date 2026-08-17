@@ -8,6 +8,7 @@ package db
 
 import (
 	"context"
+	base "errors"
 	"log"
 	"net"
 	"reflect"
@@ -30,13 +31,67 @@ type mongoCollection struct {
 	keyType reflect.Type
 }
 
+// isTransientMongoError reports whether err represents a transient or
+// infrastructure-level failure rather than a definitive answer from the
+// server. These are failures where the operation could not be completed -
+// the server was unreachable, server selection timed out, or the request
+// deadline elapsed - and are typically safe to retry. They must NOT be
+// conflated with a NotFound.
+//
+// Note: context.Canceled is deliberately NOT treated as transient. A
+// cancelled context is caller-initiated (client disconnect, graceful
+// shutdown) and is not a "datastore unreachable, safe to retry" condition -
+// retrying a cancelled context is pointless. Only context.DeadlineExceeded,
+// which reflects an operation that exceeded its own deadline (a genuine
+// timeout against the datastore), is classified as transient here.
+func isTransientMongoError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// deadline exceeded surfaces on client timeouts and server-selection
+	// timeouts and is a genuine transient failure.
+	if base.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// caller-initiated cancellation is never transient, even when the driver
+	// surfaces it wrapped as a network error because the connection was torn
+	// down. This exclusion must sit ahead of the network/timeout branches
+	// below, otherwise a wrapped context.Canceled is reclassified as transient
+	// by mongo.IsNetworkError / the net.Error check and the doc comment's
+	// guarantee no longer holds. Retrying a cancelled context is pointless.
+	if base.Is(err, context.Canceled) {
+		return false
+	}
+	// driver-level classification for network errors and timeouts (covers
+	// server-selection timeout and connection failures).
+	if mongo.IsNetworkError(err) || mongo.IsTimeout(err) {
+		return true
+	}
+	// bare network errors that may not carry a driver error label.
+	var netErr net.Error
+	if base.As(err, &netErr) {
+		return true
+	}
+	return false
+}
+
 // interprets mongo db error and returns library parsable error codes
 func interpretMongoError(err error) error {
+	if err == nil {
+		return nil
+	}
 	if mongo.IsDuplicateKeyError(err) {
 		return errors.Wrap(errors.AlreadyExists, err.Error())
 	}
-	if err == mongo.ErrNoDocuments {
+	if base.Is(err, mongo.ErrNoDocuments) {
 		return errors.Wrap(errors.NotFound, err.Error())
+	}
+	// Transient/infrastructure failures (unreachable server, server-selection
+	// timeout, deadline exceeded, network error) are classified as Unavailable
+	// so callers can distinguish them from a genuinely absent document. This is
+	// checked before falling through to the raw error so the class is not lost.
+	if isTransientMongoError(err) {
+		return errors.Wrap(errors.Unavailable, err.Error())
 	}
 	return err
 }
@@ -168,7 +223,7 @@ func (c *mongoCollection) FindMany(ctx context.Context, filter any, data any, op
 		return interpretMongoError(err)
 	}
 	if err = cursor.All(ctx, data); err != nil {
-		return err
+		return interpretMongoError(err)
 	}
 	return nil
 }
@@ -342,7 +397,7 @@ func (c *mongoCollection) Aggregate(ctx context.Context, pipeline any, result an
 	}
 	defer func() { _ = cursor.Close(ctx) }()
 	if err := cursor.All(ctx, result); err != nil {
-		return err
+		return interpretMongoError(err)
 	}
 	return nil
 }

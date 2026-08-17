@@ -86,3 +86,11 @@ func IsUnauthorized(err error) bool {
 func IsForbidden(err error) bool {
 	return GetErrCode(err) == Forbidden
 }
+
+// IsUnavailable returns true if err is due to a transient or
+// infrastructure-level failure (e.g. the datastore is unreachable or the
+// request timed out). An Unavailable error does not imply the item is absent
+// and is typically safe to retry.
+func IsUnavailable(err error) bool {
+	return GetErrCode(err) == Unavailable
+}
