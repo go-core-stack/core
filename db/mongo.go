@@ -49,10 +49,18 @@ func isTransientMongoError(err error) bool {
 		return false
 	}
 	// deadline exceeded surfaces on client timeouts and server-selection
-	// timeouts and is a genuine transient failure. context.Canceled is
-	// intentionally excluded (see the doc comment above).
+	// timeouts and is a genuine transient failure.
 	if base.Is(err, context.DeadlineExceeded) {
 		return true
+	}
+	// caller-initiated cancellation is never transient, even when the driver
+	// surfaces it wrapped as a network error because the connection was torn
+	// down. This exclusion must sit ahead of the network/timeout branches
+	// below, otherwise a wrapped context.Canceled is reclassified as transient
+	// by mongo.IsNetworkError / the net.Error check and the doc comment's
+	// guarantee no longer holds. Retrying a cancelled context is pointless.
+	if base.Is(err, context.Canceled) {
+		return false
 	}
 	// driver-level classification for network errors and timeouts (covers
 	// server-selection timeout and connection failures).
