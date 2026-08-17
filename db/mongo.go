@@ -34,16 +34,24 @@ type mongoCollection struct {
 // isTransientMongoError reports whether err represents a transient or
 // infrastructure-level failure rather than a definitive answer from the
 // server. These are failures where the operation could not be completed -
-// the server was unreachable, server selection timed out, the request
-// deadline elapsed, or an underlying network error occurred - and are
-// typically safe to retry. They must NOT be conflated with a NotFound.
+// the server was unreachable, server selection timed out, or the request
+// deadline elapsed - and are typically safe to retry. They must NOT be
+// conflated with a NotFound.
+//
+// Note: context.Canceled is deliberately NOT treated as transient. A
+// cancelled context is caller-initiated (client disconnect, graceful
+// shutdown) and is not a "datastore unreachable, safe to retry" condition -
+// retrying a cancelled context is pointless. Only context.DeadlineExceeded,
+// which reflects an operation that exceeded its own deadline (a genuine
+// timeout against the datastore), is classified as transient here.
 func isTransientMongoError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// context cancellation / deadline exceeded surfaces on client timeouts
-	// and server-selection timeouts.
-	if base.Is(err, context.DeadlineExceeded) || base.Is(err, context.Canceled) {
+	// deadline exceeded surfaces on client timeouts and server-selection
+	// timeouts and is a genuine transient failure. context.Canceled is
+	// intentionally excluded (see the doc comment above).
+	if base.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	// driver-level classification for network errors and timeouts (covers
@@ -67,7 +75,7 @@ func interpretMongoError(err error) error {
 	if mongo.IsDuplicateKeyError(err) {
 		return errors.Wrap(errors.AlreadyExists, err.Error())
 	}
-	if err == mongo.ErrNoDocuments {
+	if base.Is(err, mongo.ErrNoDocuments) {
 		return errors.Wrap(errors.NotFound, err.Error())
 	}
 	// Transient/infrastructure failures (unreachable server, server-selection
