@@ -5,7 +5,6 @@ package table
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"reflect"
 
@@ -204,7 +203,7 @@ func preserveErrClass(err error, format string, args ...any) error {
 	if errors.GetErrCode(err) != errors.Unknown {
 		return err
 	}
-	return errors.Wrapf(errors.Unknown, "%s: %s", fmt.Sprintf(format, args...), err)
+	return errors.WrapErrf(errors.Unknown, err, format, args...)
 }
 
 // Table is a generic table type providing common functions and types to specific
