@@ -13,6 +13,8 @@ import (
 	"net"
 	"reflect"
 	"strconv"
+	"sync"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -22,6 +24,13 @@ import (
 	"github.com/go-core-stack/core/errors"
 	"github.com/go-core-stack/core/utils"
 )
+
+// watchCloseTimeout bounds the change-stream teardown. When a watch's caller
+// context is cancelled we issue killCursors on a fresh, still-live context so
+// the server-side cursor is reclaimed promptly. This deadline guards that
+// teardown against a hung/unreachable server so a watch shutdown can never
+// block indefinitely.
+const watchCloseTimeout = 5 * time.Second
 
 type mongoCollection struct {
 	StoreCollection
@@ -94,6 +103,73 @@ func interpretMongoError(err error) error {
 		return errors.WrapErr(errors.Unavailable, err)
 	}
 	return err
+}
+
+// runChangeStream drives a change stream and its lifecycle so that the
+// server-side cursor is always reclaimed via killCursors when the caller's
+// context is cancelled.
+//
+// Why this indirection exists: the mongo driver binds a change stream to the
+// context it is created with. If the stream is created directly with the
+// caller's ctx, cancelling that ctx tears down the session/connection backing
+// the stream before Close runs, so the subsequent Close cannot issue
+// killCursors and the server-side cursor orphans (one leak per completed
+// watch, tracked as CORE-0045).
+//
+// To fix this without changing the public Watch signature (Option A), the
+// stream is created by the caller on a context that is NOT the caller ctx
+// (Watch / startEventLogger pass a context.Background()-derived streamCtx).
+// runChangeStream then:
+//   - runs the caller-supplied read loop against the stream, and
+//   - watches the caller ctx; on cancellation it calls Close on a fresh,
+//     still-live, short-timeout context (so killCursors is actually sent),
+//     then cancels streamCtx to unblock the read loop.
+//
+// streamCancel must be the cancel function for the context the stream was
+// created with. loop is the per-implementation decode/dispatch loop; it must
+// return when the stream is exhausted (stream.Next returns false).
+//
+// Close ownership: mongo.ChangeStream is not safe for concurrent use, so the
+// close+cancel sequence is guarded by a sync.Once. Whichever path fires first
+// - the caller-ctx cancellation or the loop returning on its own - performs
+// the single teardown; the other path becomes a no-op.
+func runChangeStream(ctx context.Context, stream *mongo.ChangeStream, streamCancel context.CancelFunc, loop func()) {
+	// teardown performs the one-and-only stream close on a fresh, live context
+	// (so killCursors is issued and the server-side cursor is reclaimed), then
+	// cancels the stream context to unblock the read loop. Guarded by Once so
+	// it is safe to call from both the caller-ctx watcher and the post-loop
+	// cleanup without racing on the (non-concurrent-safe) ChangeStream.
+	var once sync.Once
+	teardown := func() {
+		once.Do(func() {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), watchCloseTimeout)
+			_ = stream.Close(closeCtx)
+			closeCancel()
+			streamCancel()
+		})
+	}
+
+	// loopDone is closed once the read loop has fully returned, letting the
+	// caller-ctx watcher exit instead of leaking if the loop ended on its own
+	// (decode error or server-side stream end).
+	loopDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			// caller asked us to stop: tear the stream down on a live context.
+			teardown()
+		case <-loopDone:
+			// loop already returned; post-loop cleanup below owns teardown.
+		}
+	}()
+
+	// run the decode/dispatch loop on the stream's own context.
+	loop()
+	// signal loop completion so the watcher goroutine can exit, then ensure
+	// teardown has run on every exit path (Once makes this idempotent with the
+	// caller-ctx path above).
+	close(loopDone)
+	teardown()
 }
 
 // Set KeyType for the collection, this is not mandatory
@@ -285,9 +361,15 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 	default:
 		return errors.Wrapf(errors.InvalidArgument, "Invalid watch filter pipeline type specified, %v", v)
 	}
-	// start watching on the collection with passed context
-	stream, err := c.col.Watch(ctx, filter)
+	// Create the change stream on a context DERIVED FROM Background rather than
+	// the caller ctx. This decouples the cursor's session lifetime from the
+	// caller ctx so that, when the caller cancels, the session is still alive
+	// for the killCursors teardown issued by runChangeStream. See CORE-0045.
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	// start watching on the collection with the internal stream context
+	stream, err := c.col.Watch(streamCtx, filter)
 	if err != nil {
+		streamCancel()
 		return err
 	}
 
@@ -295,76 +377,63 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 	// allowing the watch starter to resume control and work with
 	// managing Watch stream by virtue of passed context
 	go func() {
-		// take a snapshot of keyTpe for processing watch
+		// take a snapshot of keyType for processing watch
 		keyType := c.keyType
-		// ensure closing of the open stream in case of returning from here
-		// keeping the handles and stack clean
-		// Note: this may not be required, if loop doesn't require it
-		// but still it is safe to keep ensuring appropriate cleanup
-		defer func() {
-			// ignore the error returned by stream close as of now
-			_ = stream.Close(context.Background())
-		}()
-		defer func() {
-			if !errors.Is(ctx.Err(), context.Canceled) {
-				// panic if the return from this function is not
-				// due to context being canceled
-				log.Panicf("End of stream observed due to error %s", stream.Err())
-			}
-		}()
-		for stream.Next(ctx) {
-			var data bson.M
-			if err := stream.Decode(&data); err != nil {
-				log.Printf("Closing watch due to decoding error %s", err)
-				return
-			}
+		runChangeStream(ctx, stream, streamCancel, func() {
+			for stream.Next(streamCtx) {
+				var data bson.M
+				if err := stream.Decode(&data); err != nil {
+					log.Printf("Closing watch due to decoding error %s", err)
+					return
+				}
 
-			op, ok := data["operationType"].(string)
-			if !ok {
-				log.Printf("Closing watch due to error, unable to find decode operation type ")
-				return
-			}
+				op, ok := data["operationType"].(string)
+				if !ok {
+					log.Printf("Closing watch due to error, unable to find decode operation type ")
+					return
+				}
 
-			var dk bson.M
-			mdk, err := bson.Marshal(data["documentKey"])
-			if err != nil {
-				log.Printf("Closing watch due to error, while bson Marshal dock Key : %q", err)
-				return
-			}
+				var dk bson.M
+				mdk, err := bson.Marshal(data["documentKey"])
+				if err != nil {
+					log.Printf("Closing watch due to error, while bson Marshal dock Key : %q", err)
+					return
+				}
 
-			err = bson.Unmarshal(mdk, &dk)
-			if err != nil {
-				log.Printf("Closing watch due to error, while bson Unmarshal doc key : %q", err)
-				return
-			}
+				err = bson.Unmarshal(mdk, &dk)
+				if err != nil {
+					log.Printf("Closing watch due to error, while bson Unmarshal doc key : %q", err)
+					return
+				}
 
-			bKey, ok := dk["_id"].(bson.D)
-			if !ok {
-				log.Printf("Closing watch due to error, unable to find id")
-				return
-			}
+				bKey, ok := dk["_id"].(bson.D)
+				if !ok {
+					log.Printf("Closing watch due to error, unable to find id")
+					return
+				}
 
-			// key that will be shared with callback function
-			var key any
-			if keyType != nil {
-				key = reflect.New(keyType.Elem()).Interface()
-			} else {
-				key = bson.M{}
-			}
+				// key that will be shared with callback function
+				var key any
+				if keyType != nil {
+					key = reflect.New(keyType.Elem()).Interface()
+				} else {
+					key = bson.M{}
+				}
 
-			marshaledData, err := bson.Marshal(bKey)
-			if err != nil {
-				log.Printf("Closing watch due to error, while bson Marshal : %q", err)
-				return
-			}
+				marshaledData, err := bson.Marshal(bKey)
+				if err != nil {
+					log.Printf("Closing watch due to error, while bson Marshal : %q", err)
+					return
+				}
 
-			err = bson.Unmarshal(marshaledData, key)
-			if err != nil {
-				log.Printf("Closing watch due to error, while bson Unmarshal to key : %q", err)
-				return
+				err = bson.Unmarshal(marshaledData, key)
+				if err != nil {
+					log.Printf("Closing watch due to error, while bson Unmarshal to key : %q", err)
+					return
+				}
+				cb(op, key)
 			}
-			cb(op, key)
-		}
+		})
 	}()
 
 	return nil
@@ -474,9 +543,14 @@ func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflec
 		opts.SetStartAtOperationTime(timestamp)
 	}
 
-	// start watching on the collection with required context
-	stream, err := c.col.Watch(ctx, mongo.Pipeline{}, opts)
+	// Create the change stream on a Background-derived context (not the caller
+	// ctx) so the cursor's session survives caller cancellation and can be
+	// reclaimed via killCursors during teardown. See CORE-0045.
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	// start watching on the collection with the internal stream context
+	stream, err := c.col.Watch(streamCtx, mongo.Pipeline{}, opts)
 	if err != nil {
+		streamCancel()
 		return err
 	}
 
@@ -484,36 +558,23 @@ func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflec
 	// allowing the watch starter to resume control and work with
 	// managing Watch stream by virtue of passed context
 	go func() {
-		// ensure closing of the open stream in case of returning from here
-		// keeping the handles and stack clean
-		// Note: this may not be required, if loop doesn't require it
-		// but still it is safe to keep ensuring appropriate cleanup
-		defer func() {
-			// ignore the error returned by stream close as of now
-			_ = stream.Close(context.Background())
-		}()
-		defer func() {
-			if !errors.Is(ctx.Err(), context.Canceled) {
-				// panic if the return from this function is not
-				// due to context being canceled
-				log.Panicf("End of stream observed due to error %s", stream.Err())
-			}
-		}()
-		for stream.Next(ctx) {
-			event := reflect.New(eventType)
+		runChangeStream(ctx, stream, streamCancel, func() {
+			for stream.Next(streamCtx) {
+				event := reflect.New(eventType)
 
-			if err := stream.Decode(event.Interface()); err != nil {
-				log.Printf("Closing watch due to decoding error %s", err)
-				return
-			}
+				if err := stream.Decode(event.Interface()); err != nil {
+					log.Printf("Closing watch due to decoding error %s", err)
+					return
+				}
 
-			method := event.MethodByName("LogEvent")
-			if !method.IsValid() {
-				log.Println("Invalid Log Events method, skipping event logging")
-			} else {
-				method.Call([]reflect.Value{})
+				method := event.MethodByName("LogEvent")
+				if !method.IsValid() {
+					log.Println("Invalid Log Events method, skipping event logging")
+				} else {
+					method.Call([]reflect.Value{})
+				}
 			}
-		}
+		})
 	}()
 
 	return nil
