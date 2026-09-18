@@ -557,8 +557,9 @@ func (c *mongoClient) HealthCheck(ctx context.Context) error {
 }
 
 // Close disconnects the underlying MongoDB driver client, releasing its
-// connection pool. Implements io.Closer so callers can type-assert
-// StoreClient to io.Closer for graceful shutdown.
-func (c *mongoClient) Close() error {
-	return c.client.Disconnect(context.Background())
+// connection pool. The caller-supplied context bounds how long Disconnect
+// waits for in-use connections to be returned, so a stuck or leaked
+// operation cannot hang shutdown indefinitely.
+func (c *mongoClient) Close(ctx context.Context) error {
+	return c.client.Disconnect(ctx)
 }
