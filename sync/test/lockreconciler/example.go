@@ -58,7 +58,8 @@ func (t *jobTable) Callback(op string, wKey any) {
 }
 
 // ReconcilerGetAllKeys seeds reconciliation of jobs that already exist when a
-// controller registers.
+// controller registers. Seeding is best-effort: on a transient DB error the
+// returned list is empty and those jobs will be re-driven by the change stream.
 func (t *jobTable) ReconcilerGetAllKeys() []any {
 	var entries []struct {
 		Key *jobKey `bson:"_id,omitempty"`
@@ -88,7 +89,9 @@ type jobProcessor struct {
 func (p *jobProcessor) Reconcile(k any) (*reconciler.Result, error) {
 	key, ok := k.(*jobKey)
 	if !ok {
-		// unexpected key type; nothing to do
+		// unexpected key type; nothing to do. Log it so a misconfigured
+		// registration is easy to spot when running the example.
+		log.Printf("jobProcessor: unexpected key type %T, skipping", k)
 		return nil, nil
 	}
 
