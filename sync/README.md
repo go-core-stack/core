@@ -65,27 +65,23 @@ nothing until the lock is released, at which point they re-check for work
 before trying again.
 
 (This work-gating applies to the *transient* variant, where the lock guards a
-discrete task. When the lock is itself the ownership token — see *Seen in the
-codebase* below — you instead acquire for any owned key and hold it, and the
+discrete task. When the lock is itself the ownership token — see *Variants of
+the pattern* below — you instead acquire for any owned key and hold it, and the
 same release notification hands the key to a surviving replica.)
 
 See `sync/test/lockreconciler/example.go` for a complete, runnable example
 built on the existing `reconciler` constructs.
 
-## Seen in the codebase
+## Variants of the pattern
 
-This is not a hypothetical pattern — it is already how coordination is done
-across our services, in two shapes that share the same lock-release re-drive:
+The same reconciler-driven, lock-release re-drive shows up in a couple of
+shapes, depending on what the lock represents:
 
-- **Acquire-and-hold ownership (leader-ish).** `agentic-core/orchestrator`
-  (`pkg/dispatch/ownership.go`, `main.go`) wraps `LockTable` in a
-  `DistributedOwnership` and registers a single idempotent `OwnershipController`
-  on *both* the agent-config table reconciler *and* `RegisterLockRelease`. Each
-  active agent's key is `TryAcquire`d and the lock is **held** for as long as
-  the replica keeps ownership; a peer's release re-drives `Reconcile` so a
-  surviving replica can take the key over. Here the lock *is* the unit of
-  ownership ("this replica reconciles this key"), so acquisition is not gated on
-  pending work — the lock is the ownership token.
+- **Acquire-and-hold ownership (leader-ish).** The lock *is* the unit of
+  ownership: a replica `TryAcquire`s a key and **holds** it for as long as it
+  owns that key; a peer's release re-drives `Reconcile` so a surviving replica
+  can take the key over. Because the lock is the ownership token, acquisition
+  is *not* gated on pending work.
 - **Work-gated transient lock.** The shape in the example below (and in the
   steps above): acquire only when there is real work for the key, release when
   done, and rely on the release notification to re-drive contenders. This
