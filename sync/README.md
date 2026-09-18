@@ -197,11 +197,11 @@ a lock* above) wakes readers on the state change. No `core/db` change.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Open
-    Open --> Maintenance: writer flips state (holds the plain write lock)
-    Maintenance --> Draining: readers see the flip via Watch, start no new reads
-    Draining --> Writing: drain window (X s) elapses
-    Writing --> Open: writer done, flip state back
+    [*] --> open
+    open --> maintenance: writer flips state (holds the plain write lock)
+    maintenance --> draining: readers see the flip via Watch, start no new reads
+    draining --> writing: drain window (X s) elapses
+    writing --> open: writer done, flip state back
 ```
 
 ```mermaid
@@ -231,3 +231,10 @@ Knobs and limits to be explicit about:
 - **Writers must be the only actors flipping state**, and exclusivity *among
   writers* is the plain distributed lock's job — the barrier does not provide
   it.
+- **Crash recovery is the caller's responsibility.** Lock TTL expiry only
+  reclaims writer exclusion — it does not reset the state document. If a writer
+  crashes after flipping to `maintenance` but before flipping back, cooperative
+  readers stay blocked until some writer restores `open`. A recovery writer
+  must therefore read the current state on acquiring the plain write lock and
+  flip it back to `open` if it is not already there, making the barrier
+  self-healing at the cost of one extra read per acquisition.
