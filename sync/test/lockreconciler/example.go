@@ -101,7 +101,12 @@ func (p *jobProcessor) Reconcile(k any) (*reconciler.Result, error) {
 	// only leads to an acquire if work is actually pending.
 	pending, err := p.hasPendingWork(key)
 	if err != nil {
-		// transient read error: returning err requeues via the pipeline
+		// Transient read error: returning err requeues via the pipeline.
+		// NOTE: error-driven requeues have no built-in backoff, so a sustained
+		// DB outage will hot-loop this key until the error clears. If that
+		// matters for your workload, return
+		// &reconciler.Result{RequeueAfter: <d>} instead of a raw error to space
+		// out retries -- see sync/README.md -> "Variants of the pattern".
 		return nil, err
 	}
 	if !pending {
@@ -117,10 +122,19 @@ func (p *jobProcessor) Reconcile(k any) (*reconciler.Result, error) {
 			// we re-check whether work is still pending.
 			return nil, nil
 		}
-		// transient DB error: requeue
+		// Transient DB error: requeue. Same no-backoff caveat as the
+		// hasPendingWork error path above -- use RequeueAfter here too if a
+		// sustained outage should not hot-loop.
 		return nil, err
 	}
-	defer func() { _ = lock.Close() }()
+	defer func() {
+		// A failed Close does not release the lock immediately; the lock ages
+		// out at the lease timeout, delaying other waiters until then. Nothing
+		// to retry here, but log it so the failure is visible.
+		if err := lock.Close(); err != nil {
+			log.Printf("jobProcessor: failed to release lock for key %q: %s", key.ID, err)
+		}
+	}()
 
 	// Step 3: we hold the lock -- do the work.
 	return p.process(key)
