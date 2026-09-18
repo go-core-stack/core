@@ -38,3 +38,83 @@ sanity of the system by identifying that the lock is held by a process which is
 no longer active and thus clears it up allowing the continuity of operations
 
 TODO(Prabhjot) add details of the lock owner handling details
+
+## Waiting for a lock
+
+`sync/` deliberately ships only a non-blocking `TryAcquire` (a duplicate-key
+insert means the lock is already held, and the call returns immediately).
+There is no blocking `Acquire`, and no fair/FIFO lock. The recommended way to
+"wait for a lock" is to drive lock usage through the **reconciler** framework
+rather than parking a goroutine on the lock:
+
+1. Register your controller for lock-release notifications with
+   `LockTable.RegisterLockRelease(name, ctrl)`. Register the *same* controller
+   on your own domain table (via its reconciler `Manager`) so that normal data
+   changes trigger it too.
+2. In `Reconcile(key)`, **first check whether there is real work pending for
+   that key**. Only if there is, call `TryAcquire`.
+3. If the lock is held by another replica, just return. When the holder
+   releases the lock, the release notification re-invokes `Reconcile(key)` and
+   you re-evaluate whether work is still pending.
+
+Gating acquisition on actual work is the important part: it avoids the endless
+take-lock / find-nothing-to-do / release-lock churn that a naive
+blocking-acquire loop would cause across N replicas, and it needs no new
+primitive. Under contention only one replica wins `TryAcquire`; the rest do
+nothing until the lock is released, at which point they re-check for work
+before trying again.
+
+(This work-gating applies to the *transient* variant, where the lock guards a
+discrete task. When the lock is itself the ownership token — see *Variants of
+the pattern* below — you instead acquire for any owned key and hold it, and the
+same release notification hands the key to a surviving replica.)
+
+See `sync/test/lockreconciler/example.go` for a complete, runnable example
+built on the existing `reconciler` constructs.
+
+## Variants of the pattern
+
+The same reconciler-driven, lock-release re-drive shows up in a couple of
+shapes, depending on what the lock represents:
+
+- **Acquire-and-hold ownership (leader-ish).** The lock *is* the unit of
+  ownership: a replica `TryAcquire`s a key and **holds** it for as long as it
+  owns that key; a peer's release re-drives `Reconcile` so a surviving replica
+  can take the key over. Because the lock is the ownership token, acquisition
+  is *not* gated on pending work.
+- **Work-gated transient lock.** The shape in the example below (and in the
+  steps above): acquire only when there is real work for the key, release when
+  done, and rely on the release notification to re-drive contenders. This
+  avoids the take-lock / find-nothing / release-lock churn when the lock is
+  *not* itself the ownership token.
+
+A third, simpler variant skips `RegisterLockRelease` entirely:
+`go-core-stack/auth`'s token-refresh reconciler (`oauth/reconciler.go`)
+`TryAcquire`s inside `Reconcile`, holds the lock only for the refresh critical
+section (`defer lock.Close()`), and on contention just backs off with
+`reconciler.Result{RequeueAfter: ...}` instead of waiting on a release
+notification. It is a concrete example of the "barging is fine" trade-off
+below — no fairness, no new primitive — and it also classifies transient vs
+permanent errors so a sustained outage does not hot-loop the token endpoint.
+
+## Accepted limitations
+
+Database-backed locks have inherent trade-offs we accept rather than engineer
+around:
+
+- **Barging, not fair.** On release, every waiter is notified and races to
+  re-acquire; acquisition order is not guaranteed. Mutual exclusion
+  (correctness) is guaranteed; FIFO ordering (fairness) is not.
+- **Coarse-grained and relatively slow** — a round-trip plus change-stream
+  propagation is on the order of tens of milliseconds. These locks suit
+  briefly-held, low-contention, leader-ish sections ("one replica reconciles
+  this key at a time"), not high-frequency fine-grained locking.
+- **Liveness is lease-bounded** — a lock held by a crashed process is cleaned
+  up only after the owner ages out (~30s by default), not instantly.
+
+A strict FIFO / ticket (bakery) lock is intentionally **not** provided. It
+would require a new atomic `FindOneAndUpdate` (returning the post-image)
+primitive in `core/db`, and strict ordering is a premium property most
+workloads never need. See go-core-stack/core#126 for the full rationale; it
+should be gated behind a concrete, demonstrated starvation requirement rather
+than built speculatively.
