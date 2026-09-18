@@ -64,8 +64,42 @@ primitive. Under contention only one replica wins `TryAcquire`; the rest do
 nothing until the lock is released, at which point they re-check for work
 before trying again.
 
+(This work-gating applies to the *transient* variant, where the lock guards a
+discrete task. When the lock is itself the ownership token — see *Seen in the
+codebase* below — you instead acquire for any owned key and hold it, and the
+same release notification hands the key to a surviving replica.)
+
 See `sync/test/lockreconciler/example.go` for a complete, runnable example
 built on the existing `reconciler` constructs.
+
+## Seen in the codebase
+
+This is not a hypothetical pattern — it is already how coordination is done
+across our services, in two shapes that share the same lock-release re-drive:
+
+- **Acquire-and-hold ownership (leader-ish).** `agentic-core/orchestrator`
+  (`pkg/dispatch/ownership.go`, `main.go`) wraps `LockTable` in a
+  `DistributedOwnership` and registers a single idempotent `OwnershipController`
+  on *both* the agent-config table reconciler *and* `RegisterLockRelease`. Each
+  active agent's key is `TryAcquire`d and the lock is **held** for as long as
+  the replica keeps ownership; a peer's release re-drives `Reconcile` so a
+  surviving replica can take the key over. Here the lock *is* the unit of
+  ownership ("this replica reconciles this key"), so acquisition is not gated on
+  pending work — the lock is the ownership token.
+- **Work-gated transient lock.** The shape in the example below (and in the
+  steps above): acquire only when there is real work for the key, release when
+  done, and rely on the release notification to re-drive contenders. This
+  avoids the take-lock / find-nothing / release-lock churn when the lock is
+  *not* itself the ownership token.
+
+A third, simpler variant skips `RegisterLockRelease` entirely:
+`go-core-stack/auth`'s token-refresh reconciler (`oauth/reconciler.go`)
+`TryAcquire`s inside `Reconcile`, holds the lock only for the refresh critical
+section (`defer lock.Close()`), and on contention just backs off with
+`reconciler.Result{RequeueAfter: ...}` instead of waiting on a release
+notification. It is a concrete example of the "barging is fine" trade-off
+below — no fairness, no new primitive — and it also classifies transient vs
+permanent errors so a sustained outage does not hot-loop the token endpoint.
 
 ## Accepted limitations
 
