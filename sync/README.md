@@ -118,3 +118,116 @@ primitive in `core/db`, and strict ordering is a premium property most
 workloads never need. See go-core-stack/core#126 for the full rationale; it
 should be gated behind a concrete, demonstrated starvation requirement rather
 than built speculatively.
+
+## No read/write lock (considered and rejected)
+
+A read/write lock — parallel readers, exclusive writer — was evaluated for
+this cross-process model and is deliberately **not** provided. This section
+records the decision, the reasoning, and the two patterns to reach for
+instead. A full RW-lock design (data model, per-reader documents,
+writer-intent doc, starvation handling) was drafted and rejected; the summary
+below is the durable takeaway.
+
+### Why not
+
+- **RW locks only pay off on in-process fast paths.** They earn their cost
+  when reads are hot and short, hugely outnumber writes, the reader
+  bookkeeping lives in shared memory (nanosecond critical sections), and the
+  lock overhead is negligible next to the work being guarded.
+- **`sync/` locks are the opposite.** They are DB-backed and coarse — a
+  round-trip plus change-stream propagation is on the order of tens of
+  milliseconds per transition. At that granularity the "parallel readers" win
+  is marginal.
+- **Tracking a reader set safely needs a primitive we intentionally don't
+  have.** A single-document reader counter on the current API is unsafe (two
+  replicas racing `read → +1 → write` lose an increment). Doing it correctly
+  requires either an atomic read-modify-write (`FindOneAndUpdate` returning the
+  post-image / `$inc`) that `db.StoreCollection` deliberately does not expose,
+  or a per-reader-document scheme layered on the unique-`InsertOne` primitive.
+  That is the *same* missing atomic-RMW primitive we already declined to build
+  for the strict FIFO / ticket lock — see go-core-stack/core#126.
+- **Starvation reintroduces the FIFO problem.** Left as pure barging (like the
+  plain `Lock`), a writer can be starved by a continuous stream of readers.
+  Guaranteeing writer progress fairly pulls back in the same ordering /
+  atomic-RMW machinery #126 rejected absent a concrete requirement.
+
+Net: an RW lock across processes is premature abstraction guarding a benefit
+that does not materialize at this granularity, and it needs a `core/db`
+primitive we chose not to add. Consistent with the YAGNI call recorded in
+go-core-stack/core#126. When a workload needs read/write coordination across
+replicas, model it with one of the two patterns below instead.
+
+### Pick the pattern per invariant
+
+| Requirement of the consumer | Use |
+|---|---|
+| Can tolerate stale / partially-applied state and will converge | Eventual consistency (no lock) |
+| Must never observe a half-applied write | Maintenance-mode barrier |
+
+Both stay inside the existing primitives — no new `core/db` capability.
+
+### 1. Eventual consistency / tolerate partial reads
+
+Readers take **no lock at all**. Writers roll out non-blocking (`UpdateOne`,
+last-writer-wins) and the system converges. This is the cheapest option and is
+fully supported today.
+
+```mermaid
+flowchart LR
+    W[Writer replica] -->|UpdateOne / last-writer-wins| DB[(Mongo document)]
+    DB -->|read, no lock| RA[Reader A]
+    DB -->|read, no lock| RB[Reader B]
+    DB -->|read, no lock| RC[Reader C]
+```
+
+- **Right when:** consumers are idempotent / self-healing and only need to
+  converge to the latest state.
+- **The cost you accept:** a reader can observe a partial update mid-rollout.
+  It does **not** suit invariants that must never be seen half-applied.
+
+### 2. Maintenance-mode barrier (quiesce → drain → write)
+
+When writes genuinely need exclusivity against reads, use a state-machine
+barrier instead of a reader/writer lock. A shared state document flips to
+`maintenance`; readers observe the flip (via `Watch`), stop starting new reads
+and drain; after an X-second propagation/drain window the writers do their
+work; then the state flips back. Writers coordinate *among themselves* with the
+existing plain distributed lock, and the reconciler re-drive (see *Waiting for
+a lock* above) wakes readers on the state change. No `core/db` change.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open
+    Open --> Maintenance: writer flips state (holds the plain write lock)
+    Maintenance --> Draining: readers see the flip via Watch, start no new reads
+    Draining --> Writing: drain window (X s) elapses
+    Writing --> Open: writer done, flip state back
+```
+
+```mermaid
+sequenceDiagram
+    participant Wr as Writer(s)
+    participant St as State doc (Mongo)
+    participant L as Plain write lock
+    participant Rd as Readers
+    Wr->>L: TryAcquire (writers-only exclusion)
+    Wr->>St: flip to `maintenance`
+    St-->>Rd: Watch event
+    Rd->>Rd: finish in-flight reads, start no new ones
+    Wr->>Wr: wait drain window (X s)
+    Wr->>St: perform write(s)
+    Wr->>St: flip back to `open`
+    St-->>Rd: Watch event → resume reads
+    Wr->>L: release
+```
+
+Knobs and limits to be explicit about:
+
+- **The drain window is a timeout, not a proof.** A slow reader can exceed X
+  seconds; pick X against your reader profile and accept that guarantee level.
+- **Cooperative, not enforced.** Readers must honor the `maintenance` state; a
+  reader that ignores it is not blocked. Exclusivity is a convention readers
+  opt into, unlike the hard mutual exclusion the plain lock gives writers.
+- **Writers must be the only actors flipping state**, and exclusivity *among
+  writers* is the plain distributed lock's job — the barrier does not provide
+  it.
