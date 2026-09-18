@@ -12,6 +12,7 @@ import (
 	"net"
 	"reflect"
 	"strconv"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -556,10 +557,27 @@ func (c *mongoClient) HealthCheck(ctx context.Context) error {
 	return c.client.Ping(ctx, nil)
 }
 
-// Close disconnects the underlying MongoDB driver client, releasing its
+// defaultCloseTimeout bounds how long the zero-argument Close waits for the
+// MongoDB driver to drain in-use connections before force-closing them. It
+// exists so the io.Closer path cannot hang shutdown indefinitely when no
+// caller-supplied deadline is available.
+const defaultCloseTimeout = 15 * time.Second
+
+// Disconnect closes the underlying MongoDB driver client, releasing its
 // connection pool. The caller-supplied context bounds how long Disconnect
 // waits for in-use connections to be returned, so a stuck or leaked
-// operation cannot hang shutdown indefinitely.
-func (c *mongoClient) Close(ctx context.Context) error {
+// operation cannot hang shutdown indefinitely. Callers that want to own the
+// shutdown deadline should prefer this over Close.
+func (c *mongoClient) Disconnect(ctx context.Context) error {
 	return c.client.Disconnect(ctx)
+}
+
+// Close implements io.Closer by disconnecting the underlying MongoDB driver
+// client using a default bounded timeout (defaultCloseTimeout). It lets a
+// consumer close the client through the standard io.Closer contract; callers
+// that need to control the shutdown deadline should use Disconnect(ctx).
+func (c *mongoClient) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
+	defer cancel()
+	return c.Disconnect(ctx)
 }
