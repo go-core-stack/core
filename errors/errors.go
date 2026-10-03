@@ -148,3 +148,10 @@ func IsForbidden(err error) bool {
 func IsUnavailable(err error) bool {
 	return GetErrCode(err) == Unavailable
 }
+
+// IsResourceExhausted returns true if err indicates a capacity limit
+// has been reached (rate limiting, quota exceeded, connection pool
+// exhaustion). The caller should back off or reduce concurrency.
+func IsResourceExhausted(err error) bool {
+	return GetErrCode(err) == ResourceExhausted
+}

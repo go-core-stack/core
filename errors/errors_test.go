@@ -97,6 +97,30 @@ func Test_GetErrCodeSeesThroughWrapping(t *testing.T) {
 	}
 }
 
+func Test_ResourceExhausted(t *testing.T) {
+	err := Wrap(ResourceExhausted, "rate limited")
+	if !IsResourceExhausted(err) {
+		t.Errorf("expected ResourceExhausted, got %v", GetErrCode(err))
+	}
+
+	err = WrapErr(ResourceExhausted, fmt.Errorf("429 too many requests"))
+	if !IsResourceExhausted(err) {
+		t.Errorf("expected ResourceExhausted through WrapErr")
+	}
+	if !base.Is(err, err.(*Error).cause) {
+		t.Errorf("WrapErr must preserve the cause")
+	}
+
+	wrapped := fmt.Errorf("calling embedding API: %w", Wrap(ResourceExhausted, "quota exceeded"))
+	if !IsResourceExhausted(wrapped) {
+		t.Errorf("expected ResourceExhausted through fmt.Errorf wrapping, got %v", GetErrCode(wrapped))
+	}
+
+	if IsResourceExhausted(Wrap(Unavailable, "connection refused")) {
+		t.Errorf("Unavailable must not be classified as ResourceExhausted")
+	}
+}
+
 type outerErr struct{ cause error }
 
 func (e *outerErr) Error() string { return "outer: " + e.cause.Error() }
