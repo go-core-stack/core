@@ -33,4 +33,12 @@ const (
 	// and is typically safe to retry. Callers must not treat Unavailable as a
 	// permanent, negative result.
 	Unavailable ErrCode = 6
+
+	// ResourceExhausted indicates a capacity limit has been reached:
+	// rate limiting (HTTP 429), quota exceeded, connection pool
+	// exhaustion, or gRPC ResourceExhausted. Unlike Unavailable the
+	// service itself is reachable — the caller has exceeded an
+	// allowance. The remedy is to back off or reduce concurrency, not
+	// to retry immediately.
+	ResourceExhausted ErrCode = 7
 )
