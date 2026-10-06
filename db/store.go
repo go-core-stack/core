@@ -46,6 +46,24 @@ type IndexDefinition struct {
 	Name string
 }
 
+// UpdateSpec describes a conditional update of one document. Each part is an
+// encodable value, as data is for UpdateOne; nil or empty parts are left out.
+type UpdateSpec struct {
+	// Match holds conditions ANDed with {_id: key}; nil means the key alone.
+	Match any
+
+	// Set, Inc and Unset become $set, $inc and $unset. At least one must
+	// carry something to write.
+	//
+	// Match, Set and Inc are each encoded once, exactly as given, and those
+	// bytes are sent: one that encodes to an empty document counts as
+	// absent, and one that cannot be encoded is InvalidArgument. An encoder
+	// declared on a pointer type runs only when a pointer is given.
+	Set   any
+	Inc   any
+	Unset []string
+}
+
 // WatchCallbackfn responsible for
 type WatchCallbackfn func(op string, key any)
 
@@ -67,6 +85,13 @@ type StoreCollection interface {
 	// if upsert flag is set, it would insert an entry if it doesn't
 	// exist while updating
 	UpdateOne(ctx context.Context, key any, data any, upsert bool) error
+
+	// UpdateOneWithSpec applies a conditional update to the one document with
+	// the given key, never inserting. It reports whether a document matched
+	// the key and spec.Match. With no Match, a missing document is a NotFound
+	// error, as for UpdateOne; with a Match, it is false, because "absent"
+	// and "condition did not hold" are the same answer to the caller.
+	UpdateOneWithSpec(ctx context.Context, key any, spec UpdateSpec) (bool, error)
 
 	// Find one entry from the store collection for the given key, where the data
 	// value is returned based on the object type passed to it

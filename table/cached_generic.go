@@ -27,6 +27,10 @@ type CachedTableConfig struct {
 	// and for ReconcilerGetAllKeys. When set, only entries matching this filter
 	// are loaded into the cache and enumerated by the reconciler.
 	// The filter is passed directly to StoreCollection.FindMany.
+	//
+	// It is also the table's scope for the typed operations that select or
+	// guard rows: CountWhere, DeleteWhere and UpdateWithOpts with If AND it
+	// in. Count, DeleteByFilter and DBFindManyWithOpts do not.
 	// Default: nil (all entries)
 	Filter any
 
@@ -58,6 +62,10 @@ func WithReadThrough() CachedTableOption {
 // This is useful when multiple CachedTable instances share the same underlying
 // MongoDB collection but each instance should only manage a subset of documents
 // (e.g., filtering by a type discriminator field).
+//
+// The filter is also the table's scope for CountWhere, DeleteWhere and
+// UpdateWithOpts with If, which AND it in. Count, DeleteByFilter and
+// DBFindManyWithOpts (with or without Where) do not.
 //
 // The filter is passed directly to StoreCollection.FindMany and should be a
 // valid MongoDB filter document (e.g., bson.M{"key.type": "slack"}).
@@ -256,6 +264,10 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 	if err != nil {
 		return err
 	}
+
+	// The field index conditions are checked against; building it never
+	// fails, so it cannot stop a table from starting.
+	indexFor(reflect.TypeOf((*E)(nil)).Elem())
 
 	t.col = col
 
@@ -503,9 +515,17 @@ func (t *CachedTable[K, E]) DBFindManyWithOpts(ctx context.Context, filter any, 
 		mongoOpts = mongoOpts.SetSort(buildSortDocument(findOpts.Sort))
 	}
 
+	// The table's configured filter is not added here, with or without a
+	// Where: a find keeps returning what it returned before Where existed.
+	// Add the scope as a Raw condition to narrow a find to it.
+	filter, err := findFilter[E](findOpts, filter)
+	if err != nil {
+		return nil, err
+	}
+
 	// Execute query
 	var data []*E
-	err := t.col.FindMany(ctx, filter, &data, mongoOpts)
+	err = t.col.FindMany(ctx, filter, &data, mongoOpts)
 	if err != nil {
 		return nil, preserveErrClass(err, "failed to find entries")
 	}

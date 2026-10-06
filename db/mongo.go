@@ -192,6 +192,141 @@ func (c *mongoCollection) UpdateOne(ctx context.Context, key any, data any, upse
 	return nil
 }
 
+// UpdateOneWithSpec applies a conditional update to the one document with
+// the given key, never inserting, and reports whether a document matched the
+// key and spec.Match.
+func (c *mongoCollection) UpdateOneWithSpec(ctx context.Context, key any, spec UpdateSpec) (bool, error) {
+	if key == nil {
+		return false, errors.Wrap(errors.InvalidArgument, "db UpdateOneWithSpec error: No Key specified")
+	}
+
+	set, err := encodeSpecDocument(spec.Set)
+	if err != nil {
+		return false, errors.WrapErrf(errors.InvalidArgument, err, "db UpdateOneWithSpec error: encoding Set")
+	}
+	inc, err := encodeSpecDocument(spec.Inc)
+	if err != nil {
+		return false, errors.WrapErrf(errors.InvalidArgument, err, "db UpdateOneWithSpec error: encoding Inc")
+	}
+	match, err := encodeSpecDocument(spec.Match)
+	if err != nil {
+		return false, errors.WrapErrf(errors.InvalidArgument, err, "db UpdateOneWithSpec error: encoding Match")
+	}
+
+	update := bson.D{}
+	if set != nil {
+		update = append(update, bson.E{Key: "$set", Value: set})
+	}
+	if inc != nil {
+		update = append(update, bson.E{Key: "$inc", Value: inc})
+	}
+	if len(spec.Unset) > 0 {
+		unset := bson.D{}
+		for _, path := range spec.Unset {
+			unset = append(unset, bson.E{Key: path, Value: ""})
+		}
+		update = append(update, bson.E{Key: "$unset", Value: unset})
+	}
+	if len(update) == 0 {
+		return false, errors.Wrap(errors.InvalidArgument, "db UpdateOneWithSpec error: nothing to write")
+	}
+
+	conditional := match != nil
+	var filter any = bson.D{{Key: "_id", Value: key}}
+	if conditional {
+		filter = bson.D{{Key: "$and", Value: bson.A{filter, match}}}
+	}
+
+	resp, err := c.col.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(false))
+	if err != nil {
+		return false, interpretUpdateSpecError(err)
+	}
+	if resp.MatchedCount == 0 {
+		if !conditional {
+			return false, errors.Wrap(errors.NotFound, "No Document found")
+		}
+		// the row is absent, or does not hold the conditions: the same
+		// answer to a caller that asked "apply this only if"
+		return false, nil
+	}
+	return true, nil
+}
+
+// Server write-error codes that mean the update does not fit the stored
+// document, rather than that the server or the network failed.
+const (
+	mongoCodePathNotViable              = 28
+	mongoCodeTypeMismatch               = 14
+	mongoCodeConflictingUpdateOperators = 40
+)
+
+// interpretUpdateSpecError classifies an error from UpdateOneWithSpec. It
+// adds two classes to interpretMongoError, for this method only:
+//   - write errors meaning the request does not fit the stored data
+//     (TypeMismatch, ConflictingUpdateOperators, PathNotViable) become
+//     InvalidArgument;
+//   - a write-concern error alone becomes Unavailable: the write may have
+//     been applied without the requested acknowledgement, an unknown outcome.
+//
+// A duplicate key wins over both, and any write error wins over a
+// write-concern error, because a write error means nothing was modified.
+func interpretUpdateSpecError(err error) error {
+	var we mongo.WriteException
+	if base.As(err, &we) {
+		if mongo.IsDuplicateKeyError(err) {
+			return errors.WrapErr(errors.AlreadyExists, err)
+		}
+		for _, e := range we.WriteErrors {
+			switch e.Code {
+			case mongoCodeTypeMismatch, mongoCodeConflictingUpdateOperators, mongoCodePathNotViable:
+				return errors.WrapErr(errors.InvalidArgument, err)
+			}
+		}
+		if len(we.WriteErrors) == 0 && we.WriteConcernError != nil {
+			return errors.WrapErr(errors.Unavailable, err)
+		}
+	}
+	return interpretMongoError(err)
+}
+
+// encodeSpecDocument encodes one part of an UpdateSpec once, exactly as
+// given, and returns nil when it carries nothing: nil, a nil map, slice or
+// pointer, an empty map or slice, or anything that encodes to a document with
+// no elements. The encoded bytes are what is sent, so what was judged empty or
+// not is what the server receives.
+func encodeSpecDocument(v any) (bson.Raw, error) {
+	if v == nil {
+		return nil, nil
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil, nil
+		}
+		rv = rv.Elem()
+	}
+	var doc []byte
+	if raw, ok := rv.Interface().(bson.Raw); ok {
+		doc = raw
+	} else {
+		var err error
+		if doc, err = bson.Marshal(v); err != nil {
+			if (rv.Kind() == reflect.Map || rv.Kind() == reflect.Slice) && rv.Len() == 0 {
+				return nil, nil // an empty list is no document, and nothing to send
+			}
+			return nil, err
+		}
+	}
+	elems, err := bson.Raw(doc).Elements()
+	if err != nil {
+		return nil, err
+	}
+	if len(elems) == 0 {
+		return nil, nil
+	}
+	return doc, nil
+}
+
 // Find one entry from the store collection for the given key, where the data
 // value is returned based on the object type passed to it
 func (c *mongoCollection) FindOne(ctx context.Context, key any, data any) error {
