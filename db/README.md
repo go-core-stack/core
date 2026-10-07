@@ -27,6 +27,7 @@ type StoreCollection interface {
     SetKeyType(keyType reflect.Type) error
     InsertOne(ctx context.Context, key any, data any) error
     UpdateOne(ctx context.Context, key any, data any, upsert bool) error
+    UpdateOneWithSpec(ctx context.Context, key any, spec UpdateSpec) (bool, error)
     FindOne(ctx context.Context, key any, data any) error
     FindMany(ctx context.Context, filter any, data any, opts ...any) error
     Count(ctx context.Context, filter any) (int64, error)
@@ -43,6 +44,18 @@ type StoreCollection interface {
 - **Context-aware** operations for cancellation and timeout support
 - **Change monitoring** via `Watch()` with callback notifications
 - **Bulk operations** with `FindMany()` and `DeleteMany()`
+- **Conditional updates** with `UpdateOneWithSpec()`: `$set`, `$inc` and `$unset` on one document, applied only if it matches `spec.Match`, reporting whether it matched. No updated document is returned.
+
+```go
+type UpdateSpec struct {
+    Match any      // conditions ANDed with {_id: key}; nil means the key alone
+    Set   any      // $set
+    Inc   any      // $inc
+    Unset []string // $unset
+}
+```
+
+With no `Match`, a missing document is `NotFound`; with one, it is `false`. Write errors meaning the update does not fit the stored data (type mismatch, conflicting operators, a path under a scalar) are `InvalidArgument`, and a write-concern error alone is `Unavailable`, for this method only.
 - **Index management** via `EnsureIndexes()` for idempotent index creation
 - **Event logging** for audit trails and debugging
 

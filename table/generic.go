@@ -160,6 +160,11 @@ type FindOptions struct {
 	Limit  *int32
 	Offset *int32
 	Sort   []SortOption
+
+	// conditions recorded by Where; read them with Conds
+	conds      []Cond
+	whereGiven bool
+	whereEmpty bool
 }
 
 // FindOption is a functional option for configuring FindMany queries.
@@ -254,6 +259,10 @@ func (t *Table[K, E]) Initialize(col db.StoreCollection) error {
 	if err != nil {
 		return err
 	}
+
+	// The field index conditions are checked against; building it never
+	// fails, so it cannot stop a table from starting.
+	indexFor(reflect.TypeOf(e))
 
 	t.col = col
 	return nil
@@ -395,9 +404,14 @@ func (t *Table[K, E]) FindManyWithOpts(ctx context.Context, filter any, opts ...
 		mongoOpts = mongoOpts.SetSort(buildSortDocument(findOpts.Sort))
 	}
 
+	filter, err := findFilter[E](findOpts, filter)
+	if err != nil {
+		return nil, err
+	}
+
 	// Execute query
 	var data []*E
-	err := t.col.FindMany(ctx, filter, &data, mongoOpts)
+	err = t.col.FindMany(ctx, filter, &data, mongoOpts)
 	if err != nil {
 		return nil, preserveErrClass(err, "failed to find entries")
 	}

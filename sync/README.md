@@ -138,22 +138,24 @@ below is the durable takeaway.
   round-trip plus change-stream propagation is on the order of tens of
   milliseconds per transition. At that granularity the "parallel readers" win
   is marginal.
-- **Tracking a reader set safely needs a primitive we intentionally don't
-  have.** A single-document reader counter on the current API is unsafe (two
-  replicas racing `read → +1 → write` lose an increment). Doing it correctly
-  requires either an atomic read-modify-write (`FindOneAndUpdate` returning the
-  post-image / `$inc`) that `db.StoreCollection` deliberately does not expose,
-  or a per-reader-document scheme layered on the unique-`InsertOne` primitive.
-  That is the *same* missing atomic-RMW primitive we already declined to build
-  for the strict FIFO / ticket lock — see go-core-stack/core#126.
+- **Tracking a reader set safely needs more than an atomic counter.**
+  `db.StoreCollection.UpdateOneWithSpec` (and `table.UpdateWithOpts`) now
+  give a conditional `$inc`, so a single-document reader counter no longer
+  loses increments when two replicas race. It still cannot be made correct
+  on its own: a write whose outcome is unknown (a timeout, a lost
+  connection) may have been applied, so a retried `+1` or `-1` can count a
+  reader twice. A correct reader set needs per-reader identity, such as a
+  per-reader-document scheme layered on the unique-`InsertOne` primitive.
+  No post-image is returned, so the strict FIFO / ticket lock declined in
+  go-core-stack/core#126 stays declined.
 - **Starvation reintroduces the FIFO problem.** Left as pure barging (like the
   plain `Lock`), a writer can be starved by a continuous stream of readers.
   Guaranteeing writer progress fairly pulls back in the same ordering /
   atomic-RMW machinery #126 rejected absent a concrete requirement.
 
 Net: an RW lock across processes is premature abstraction guarding a benefit
-that does not materialize at this granularity, and it needs a `core/db`
-primitive we chose not to add. Consistent with the YAGNI call recorded in
+that does not materialize at this granularity, and a correct reader set
+needs per-reader bookkeeping on top of any counter. Consistent with the YAGNI call recorded in
 go-core-stack/core#126. When a workload needs read/write coordination across
 replicas, model it with one of the two patterns below instead.
 
