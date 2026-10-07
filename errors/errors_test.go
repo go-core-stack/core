@@ -121,6 +121,51 @@ func Test_ResourceExhausted(t *testing.T) {
 	}
 }
 
+// The state-dependent codes keep their values, are found through every kind
+// of wrapping, and are never mistaken for one another or for their
+// neighbours.
+func Test_StateDependentCodes(t *testing.T) {
+	cases := []struct {
+		code  ErrCode
+		value int
+		is    func(error) bool
+	}{
+		{FailedPrecondition, 8, IsFailedPrecondition},
+		{Conflict, 9, IsConflict},
+		{Busy, 10, IsBusy},
+	}
+	all := []ErrCode{Unknown, NotFound, AlreadyExists, InvalidArgument, Unauthorized, Forbidden,
+		Unavailable, ResourceExhausted, FailedPrecondition, Conflict, Busy}
+	for _, c := range cases {
+		if int(c.code) != c.value {
+			t.Errorf("code %d moved to %d; codes are never renumbered", c.value, c.code)
+		}
+
+		if !c.is(Wrap(c.code, "refused")) {
+			t.Errorf("code %d not found through Wrap", c.code)
+		}
+		cause := fmt.Errorf("underlying")
+		err := WrapErr(c.code, cause)
+		if !c.is(err) || !base.Is(err, cause) {
+			t.Errorf("code %d: WrapErr must keep both the code and the cause", c.code)
+		}
+		wrapped := fmt.Errorf("outer context: %w", Wrap(c.code, "refused"))
+		if !c.is(wrapped) {
+			t.Errorf("code %d not found through fmt.Errorf wrapping, got %v", c.code, GetErrCode(wrapped))
+		}
+		var e *Error
+		if !base.As(wrapped, &e) || e.code != c.code {
+			t.Errorf("code %d not found through errors.As", c.code)
+		}
+
+		for _, other := range all {
+			if other != c.code && c.is(Wrap(other, "other")) {
+				t.Errorf("code %d is mistaken for code %d", other, c.code)
+			}
+		}
+	}
+}
+
 type outerErr struct{ cause error }
 
 func (e *outerErr) Error() string { return "outer: " + e.cause.Error() }

@@ -143,8 +143,10 @@ func IsForbidden(err error) bool {
 
 // IsUnavailable returns true if err is due to a transient or
 // infrastructure-level failure (e.g. the datastore is unreachable or the
-// request timed out). An Unavailable error does not imply the item is absent
-// and is typically safe to retry.
+// request timed out). An Unavailable error does not imply the item is absent,
+// and its outcome is unknown: a write may or may not have been applied, so
+// retry only a request that is harmless to apply twice, or read the state
+// again first.
 func IsUnavailable(err error) bool {
 	return GetErrCode(err) == Unavailable
 }
@@ -154,4 +156,24 @@ func IsUnavailable(err error) bool {
 // exhaustion). The caller should back off or reduce concurrency.
 func IsResourceExhausted(err error) bool {
 	return GetErrCode(err) == ResourceExhausted
+}
+
+// IsFailedPrecondition returns true if err refuses a valid request because
+// the target's current state rules it out. Waiting does not help.
+func IsFailedPrecondition(err error) bool {
+	return GetErrCode(err) == FailedPrecondition
+}
+
+// IsConflict returns true if err refuses a request built on a view of the
+// state that is no longer current. Read the state again and build a new
+// request.
+func IsConflict(err error) bool {
+	return GetErrCode(err) == Conflict
+}
+
+// IsBusy returns true if err reports that the work could not start because
+// another holder kept what it needed. Nothing was applied, so the same
+// request can be sent again.
+func IsBusy(err error) bool {
+	return GetErrCode(err) == Busy
 }
