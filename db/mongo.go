@@ -36,12 +36,13 @@ type mongoCollection struct {
 // infrastructure-level failure rather than a definitive answer from the
 // server. These are failures where the operation could not be completed -
 // the server was unreachable, server selection timed out, or the request
-// deadline elapsed - and are typically safe to retry. They must NOT be
-// conflated with a NotFound.
+// deadline elapsed. They must NOT be conflated with a NotFound. For a write
+// the outcome is unknown: it may or may not have been applied, so it is safe
+// to retry only if applying it twice is harmless (see errors.Unavailable).
 //
 // Note: context.Canceled is deliberately NOT treated as transient. A
 // cancelled context is caller-initiated (client disconnect, graceful
-// shutdown) and is not a "datastore unreachable, safe to retry" condition -
+// shutdown) and is not a "datastore unreachable" condition -
 // retrying a cancelled context is pointless. Only context.DeadlineExceeded,
 // which reflects an operation that exceeded its own deadline (a genuine
 // timeout against the datastore), is classified as transient here.

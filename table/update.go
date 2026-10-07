@@ -24,6 +24,9 @@ type updateOptions struct {
 
 	increments []increment
 	unset      []string
+
+	missCode  errors.ErrCode
+	missGiven int // how many OnMiss options were given
 }
 
 type increment struct {
@@ -64,6 +67,26 @@ func WithIncrement[F any](fields *F) UpdateOption {
 	return func(o *updateOptions) { o.increments = append(o.increments, inc) }
 }
 
+// OnMiss reports a miss, when the row does not hold the If conditions, as an
+// error with code instead of (false, nil). The library does not interpret
+// conditions, so only the caller can say what a miss means:
+//
+//   - errors.Conflict when the condition checked a version or a value the
+//     caller read: read the row again and build a new request.
+//   - errors.FailedPrecondition when the condition checked a state that no
+//     longer allows the change, such as a job another claimant took or a
+//     row being deleted.
+//
+// Only those two codes are accepted, and OnMiss needs If. The error is
+// returned with false; a miss still means only "the row does not hold the
+// conditions now, or does not exist" (see UpdateWithOpts).
+func OnMiss(code errors.ErrCode) UpdateOption {
+	return func(o *updateOptions) {
+		o.missCode = code
+		o.missGiven++
+	}
+}
+
 // WithUnset removes the fields at paths, in the same atomic write.
 func WithUnset(paths ...string) UpdateOption {
 	paths = append([]string(nil), paths...) // the caller's slice may change before the option is used
@@ -88,6 +111,17 @@ func conditionalUpdate[K any, E any](ctx context.Context, col db.StoreCollection
 			return false, errors.Wrap(errors.InvalidArgument, "UpdateWithOpts: nil option")
 		}
 		opt(o)
+	}
+	if o.missGiven > 0 {
+		switch {
+		case o.missGiven > 1:
+			return false, errors.Wrap(errors.InvalidArgument, "OnMiss: given more than once")
+		case !o.ifGiven:
+			return false, errors.Wrap(errors.InvalidArgument, "OnMiss: needs If; without conditions a missing row is already NotFound")
+		case o.missCode != errors.FailedPrecondition && o.missCode != errors.Conflict:
+			return false, errors.Wrapf(errors.InvalidArgument,
+				"OnMiss: code %d is not FailedPrecondition or Conflict; no other code describes a miss truthfully", o.missCode)
+		}
 	}
 	entryType := reflect.TypeOf((*E)(nil)).Elem()
 	idx := indexFor(entryType)
@@ -183,6 +217,10 @@ func conditionalUpdate[K any, E any](ctx context.Context, col db.StoreCollection
 	if err != nil {
 		return false, preserveErrClass(err, "failed to update entry with key %v", key)
 	}
+	if !applied && o.missGiven > 0 {
+		return false, errors.Wrapf(o.missCode,
+			"UpdateWithOpts: the row with key %+v does not hold the conditions now, or does not exist", *key)
+	}
 	return applied, nil
 }
 
@@ -199,10 +237,21 @@ func conditionalUpdate[K any, E any](ctx context.Context, col db.StoreCollection
 // fields) needs omitempty on every field and pointers for nested structs. It
 // may be nil when the call only increments or unsets.
 //
+// With OnMiss, a miss is returned as an error with the code the caller names
+// (FailedPrecondition or Conflict) instead of (false, nil). A missing row and
+// a row that does not hold the conditions are not told apart: the write's
+// own result cannot distinguish them, and a second read would not be atomic
+// with it. Read the row if the difference matters.
+//
 // After an Unavailable error, a cancelled context or a client shutdown the
-// write may or may not have been applied, and a retry can return false for
-// its own earlier write: false means "the row does not hold the conditions
-// now", not "someone else won".
+// write may or may not have been applied, and a retry can miss on its own
+// earlier write: a miss means "the row does not hold the conditions now", not
+// "someone else won". A caller that treats such a miss as a Conflict, reads
+// again and redoes a WithIncrement whose first attempt was applied applies it
+// twice. An expected version cannot tell the caller's own earlier write from
+// another writer's: write a marker only this attempt could have written (a
+// claim token, reused across its retries) and, after a miss, read the row
+// and look for it before redoing an increment.
 func (t *Table[K, E]) UpdateWithOpts(ctx context.Context, key *K, entry *E, opts ...UpdateOption) (bool, error) {
 	return conditionalUpdate(ctx, t.col, nil, key, entry, opts)
 }

@@ -805,3 +805,134 @@ func TestDeleteWhereRefusesAZeroValueCond(t *testing.T) {
 		t.Fatalf("%d rows left, want 1", n)
 	}
 }
+
+// With OnMiss a miss is an error with the code the caller names; a hit is
+// unchanged, and the row is left as it was on a miss.
+func TestUpdateWithOpts_OnMissReportsTheCallersCode(t *testing.T) {
+	ctx := context.Background()
+	tbl := newJobTable(t)
+	key := insertJob(t, tbl, "onmiss", &Job{Status: p("queued"), Version: 1})
+
+	ok, err := tbl.UpdateWithOpts(ctx, key, &Job{Worker: p("a")}, If(Match(&Job{Version: 7})), OnMiss(errors.Conflict))
+	if ok || !errors.IsConflict(err) || !strings.Contains(err.Error(), "does not hold the conditions") {
+		t.Fatalf("version miss = %v, %v; want false and Conflict", ok, err)
+	}
+	ok, err = tbl.UpdateWithOpts(ctx, key, &Job{Worker: p("a")}, If(In("status", "done")), OnMiss(errors.FailedPrecondition))
+	if ok || !errors.IsFailedPrecondition(err) {
+		t.Fatalf("state miss = %v, %v; want false and FailedPrecondition", ok, err)
+	}
+	if got, _ := tbl.Find(ctx, key); got.Worker != nil {
+		t.Errorf("a miss wrote the row: worker = %s", *got.Worker)
+	}
+
+	// a missing row is a miss too: the two are not told apart
+	absent := &JobKey{Kind: "job", ID: "onmiss-absent"}
+	ok, err = tbl.UpdateWithOpts(ctx, absent, &Job{Worker: p("a")}, If(In("status", "queued")), OnMiss(errors.FailedPrecondition))
+	if ok || !errors.IsFailedPrecondition(err) {
+		t.Fatalf("absent row = %v, %v; want false and FailedPrecondition", ok, err)
+	}
+
+	ok, err = tbl.UpdateWithOpts(ctx, key, &Job{Worker: p("a")}, If(Match(&Job{Version: 1})), OnMiss(errors.Conflict))
+	if !ok || err != nil {
+		t.Fatalf("hit = %v, %v; want true, nil", ok, err)
+	}
+}
+
+// OnMiss is refused, before anything is sent, without If, with a code that
+// does not describe a miss, or when given twice.
+func TestUpdateWithOpts_OnMissRefusals(t *testing.T) {
+	ctx := context.Background()
+	tbl := newJobTable(t)
+	key := insertJob(t, tbl, "onmiss-refused", &Job{Status: p("queued")})
+	cond := If(In("status", "queued"))
+	for name, opts := range map[string][]UpdateOption{
+		"without If":          {OnMiss(errors.Conflict)},
+		"NotFound":            {cond, OnMiss(errors.NotFound)},
+		"Unavailable":         {cond, OnMiss(errors.Unavailable)},
+		"Busy":                {cond, OnMiss(errors.Busy)},
+		"Unknown":             {cond, OnMiss(errors.Unknown)},
+		"given twice":         {cond, OnMiss(errors.Conflict), OnMiss(errors.Conflict)},
+		"two different codes": {cond, OnMiss(errors.Conflict), OnMiss(errors.FailedPrecondition)},
+	} {
+		ok, err := tbl.UpdateWithOpts(ctx, key, &Job{Worker: p("a")}, opts...)
+		if ok || !errors.IsInvalidArgument(err) || !strings.Contains(err.Error(), "OnMiss") {
+			t.Errorf("%s = %v, %v; want InvalidArgument naming OnMiss", name, ok, err)
+		}
+	}
+	if got, _ := tbl.Find(ctx, key); got.Worker != nil {
+		t.Errorf("a refused update wrote the row: worker = %s", *got.Worker)
+	}
+}
+
+// On a scoped CachedTable a row outside the scope is a miss, and OnMiss
+// reports it with the caller's code.
+func TestCachedTableOnMissOutsideScope(t *testing.T) {
+	ctx := context.Background()
+	col := jobCollection(t)
+	scoped := &CachedTable[JobKey, Job]{}
+	if err := scoped.InitializeWithConfig(col, WithFilter(bson.M{"_id.kind": "mine"})); err != nil {
+		t.Fatal(err)
+	}
+	theirs := &JobKey{Kind: "theirs", ID: "1"}
+	if err := scoped.Insert(ctx, theirs, &Job{Status: p("done")}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := scoped.UpdateWithOpts(ctx, theirs, &Job{Worker: p("a")}, If(In("status", "done")), OnMiss(errors.FailedPrecondition))
+	if ok || !errors.IsFailedPrecondition(err) {
+		t.Errorf("update outside scope = %v, %v; want false and FailedPrecondition", ok, err)
+	}
+}
+
+// countingCol answers UpdateOneWithSpec with a fixed result and counts the
+// calls; every other method is the embedded interface's (nil, unused).
+type countingCol struct {
+	db.StoreCollection
+	calls   int
+	applied bool
+	err     error
+}
+
+func (c *countingCol) UpdateOneWithSpec(_ context.Context, _ any, _ db.UpdateSpec) (bool, error) {
+	c.calls++
+	return c.applied, c.err
+}
+
+// A refused OnMiss sends nothing; an empty If is refused first, with its own
+// message; a write error keeps its own code, never the OnMiss code; and a
+// miss with only an increment is converted.
+func TestUpdateWithOpts_OnMissAgainstAFakeCollection(t *testing.T) {
+	ctx := context.Background()
+	key := &JobKey{Kind: "job", ID: "fake"}
+	cond := If(In("status", "queued"))
+	run := func(col *countingCol, entry *Job, opts ...UpdateOption) (bool, error) {
+		return conditionalUpdate(ctx, col, nil, key, entry, opts)
+	}
+
+	for name, opts := range map[string][]UpdateOption{
+		"without If":  {OnMiss(errors.Conflict)},
+		"wrong code":  {cond, OnMiss(errors.Busy)},
+		"given twice": {cond, OnMiss(errors.Conflict), OnMiss(errors.Conflict)},
+	} {
+		col := &countingCol{}
+		if _, err := run(col, nil, opts...); !errors.IsInvalidArgument(err) || col.calls != 0 {
+			t.Errorf("%s = %v after %d calls; want InvalidArgument with none sent", name, err, col.calls)
+		}
+	}
+
+	col := &countingCol{}
+	if _, err := run(col, &Job{Worker: p("a")}, If(), OnMiss(errors.Conflict)); !errors.IsInvalidArgument(err) ||
+		!strings.Contains(err.Error(), "If: no conditions") || col.calls != 0 {
+		t.Errorf("empty If with OnMiss = %v after %d calls; want the empty-If refusal", err, col.calls)
+	}
+
+	col = &countingCol{err: errors.Wrap(errors.Unavailable, "server selection timed out")}
+	if ok, err := run(col, &Job{Worker: p("a")}, cond, OnMiss(errors.Conflict)); ok || !errors.IsUnavailable(err) {
+		t.Errorf("write error with OnMiss = %v, %v; want the write's own Unavailable", ok, err)
+	}
+
+	col = &countingCol{}
+	if ok, err := run(col, nil, cond, WithIncrement(&Job{Attempts: 1}), OnMiss(errors.FailedPrecondition)); ok ||
+		!errors.IsFailedPrecondition(err) || col.calls != 1 {
+		t.Errorf("increment-only miss = %v, %v after %d calls; want FailedPrecondition after one", ok, err, col.calls)
+	}
+}
