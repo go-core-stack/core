@@ -51,6 +51,17 @@ type Manager interface {
 	mustEmbedManagerImpl()
 }
 
+// KeyLister is optionally implemented by a Manager. When it is, the
+// replay of existing keys started by Register lists them with
+// ReconcilerListKeys under the context the ManagerImpl was initialized
+// with, so the listing ends when that context ends. Otherwise the replay
+// calls ReconcilerGetAllKeys.
+type KeyLister interface {
+	// ReconcilerListKeys returns all existing keys in the collection,
+	// reading under ctx. It reports a failed read as an error.
+	ReconcilerListKeys(ctx context.Context) ([]any, error)
+}
+
 // Manager implementation with implementation of the core logic
 // typically built over and above database store on which it will
 // offer reconcilation capabilities
@@ -62,6 +73,9 @@ type ManagerImpl struct {
 }
 
 // callback registered with the data store
+//
+// Once the context the manager was initialized with has ended, its
+// pipelines have stopped and the entry is dropped quietly.
 func (m *ManagerImpl) NotifyCallback(wKey any) {
 	// iterate over all the registered clients
 	m.controllers.Range(func(name, data any) bool {
@@ -73,6 +87,13 @@ func (m *ManagerImpl) NotifyCallback(wKey any) {
 		// enqueue the entry for reconciliation
 		err := crtl.pipeline.Enqueue(wKey)
 		if err != nil {
+			if m.ctx.Err() != nil {
+				// the manager has ended, so every pipeline has
+				// stopped; drop the entry
+				return false
+			}
+			// Enqueue fails only once its context, the manager's,
+			// has ended; this is kept for any other failure
 			log.Panicln("Failed to enqueue an entry for reconciliation", name, err)
 		}
 		return true
@@ -80,6 +101,13 @@ func (m *ManagerImpl) NotifyCallback(wKey any) {
 }
 
 // Initialize the manager with context and relevant collection to work with
+//
+// ctx is the manager's lifetime. When it ends, the pipelines of the
+// controllers registered with it stop, their requeues end, a change
+// notification is dropped, and the replay of existing keys started by
+// Register returns. The replay's listing is read under ctx only if the
+// parent implements KeyLister; ReconcilerGetAllKeys is not bounded by it.
+// Register fails once ctx has ended.
 func (m *ManagerImpl) Initialize(ctx context.Context, parent Manager) error {
 	if m.parent != nil {
 		return errors.Wrap(errors.AlreadyExists, "Initialization already done")
@@ -96,6 +124,11 @@ func (m *ManagerImpl) Register(name string, crtl Controller) error {
 	if m.parent == nil {
 		return errors.Wrap(errors.InvalidArgument, "manager is not initialized")
 	}
+	if m.ctx.Err() != nil {
+		// a pipeline started now would never run; for a table this
+		// means its client has been closed
+		return errors.Wrap(errors.FailedPrecondition, "reconciler manager has ended")
+	}
 	data := &controllerData{
 		name:   name,
 		handle: crtl,
@@ -111,14 +144,44 @@ func (m *ManagerImpl) Register(name string, crtl Controller) error {
 	// ensure triggering reconciliation of existing entries
 	// separately for reconciliation by the controller
 	go func() {
-		keys := m.parent.ReconcilerGetAllKeys()
+		keys, ok := m.existingKeys()
+		if !ok {
+			return
+		}
 		for _, key := range keys {
 			err := data.pipeline.Enqueue(key)
 			if err != nil {
+				if m.ctx.Err() != nil {
+					// the manager has ended, nothing is left
+					// to replay into
+					return
+				}
+				// unreachable while Enqueue fails only once the
+				// manager's context has ended; kept for any other
+				// failure
 				log.Panicln("failed to enqueue an entry from existing in the queue", err)
 			}
 		}
 	}()
 
 	return nil
+}
+
+// existingKeys lists the keys Register replays into a new pipeline. It
+// reports false if the listing failed because the manager's context has
+// ended; any other failure of a KeyLister panics, as ReconcilerGetAllKeys
+// does.
+func (m *ManagerImpl) existingKeys() ([]any, bool) {
+	lister, ok := m.parent.(KeyLister)
+	if !ok {
+		return m.parent.ReconcilerGetAllKeys(), true
+	}
+	keys, err := lister.ReconcilerListKeys(m.ctx)
+	if err != nil {
+		if m.ctx.Err() != nil {
+			return nil, false
+		}
+		log.Panicf("got error while fetching all keys %s", err)
+	}
+	return keys, true
 }

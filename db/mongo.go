@@ -590,6 +590,13 @@ func (c *mongoCollection) EnsureIndexes(ctx context.Context, indexes []IndexDefi
 	return nil
 }
 
+// Lifetime returns a context that ends when the client this collection
+// was obtained from is closed, before the client disconnects. It
+// implements ClientLifetime.
+func (c *mongoCollection) Lifetime() context.Context {
+	return c.parent.client.done
+}
+
 // startEventLogger starts the event logger for the collection and trigger logger for events
 func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflect.Type, timestamp *bson.Timestamp) error {
 	// TODO(prabhjot) if we may need to enable pre and post images for change streams
@@ -865,9 +872,11 @@ const defaultCloseTimeout = 15 * time.Second
 //
 // Before disconnecting, it cancels every change stream started through this
 // client (Watch and the event logger), so their loops end quietly instead
-// of failing on a disconnected client. It does not wait for a callback in
-// progress; that callback's calls on this client then fail. A Watch started after Disconnect
-// returns a FailedPrecondition error.
+// of failing on a disconnected client. It also ends the context returned
+// by Lifetime on its collections, under which a table's reconciler runs.
+// It does not wait for a callback in progress; that callback's calls on
+// this client then fail. A Watch started after Disconnect returns a
+// FailedPrecondition error.
 //
 // Disconnect and Close may be called more than once. Only the first call
 // disconnects; later calls return nil, without waiting for a first call

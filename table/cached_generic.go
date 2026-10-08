@@ -259,8 +259,9 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 		return err
 	}
 
-	// Initialize the reconciler manager
-	err = t.ManagerImpl.Initialize(context.Background(), t)
+	// Initialize the reconciler manager, which ends when the
+	// collection's client is closed
+	err = t.ManagerImpl.Initialize(clientLifetime(col), t)
 	if err != nil {
 		return err
 	}
@@ -338,20 +339,32 @@ func (t *CachedTable[K, E]) callback(op string, wKey any) {
 	t.NotifyCallback(wKey)
 }
 
-// ReconcilerGetAllKeys returns all keys in the table.
-// If a filter was configured via WithFilter, only keys matching the filter are returned.
-// Used by the reconciler to enumerate all managed entries.
+// ReconcilerGetAllKeys returns all keys in the table, read from the
+// database. If a filter was configured via WithFilter, only keys matching
+// the filter are returned. It panics if the keys cannot be read.
 func (t *CachedTable[K, E]) ReconcilerGetAllKeys() []any {
-	list := []keyOnly[K]{}
-	keys := []any{}
-	err := t.col.FindMany(context.Background(), t.filter, &list)
+	keys, err := t.ReconcilerListKeys(context.Background())
 	if err != nil {
 		log.Panicf("got error while fetching all keys %s", err)
+	}
+	return keys
+}
+
+// ReconcilerListKeys returns all keys in the table, read from the
+// database under ctx, filtered as ReconcilerGetAllKeys is. The reconciler
+// uses it to replay existing entries to a newly registered controller,
+// so the read ends when the reconciler does.
+func (t *CachedTable[K, E]) ReconcilerListKeys(ctx context.Context) ([]any, error) {
+	list := []keyOnly[K]{}
+	keys := []any{}
+	err := t.col.FindMany(ctx, t.filter, &list)
+	if err != nil {
+		return nil, err
 	}
 	for _, k := range list {
 		keys = append(keys, &k.Key)
 	}
-	return []any(keys)
+	return keys, nil
 }
 
 // Insert adds a new entry to the table with the given key.

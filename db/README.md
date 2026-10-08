@@ -44,6 +44,7 @@ type StoreCollection interface {
 - **Context-aware** operations for cancellation and timeout support
 - **Change monitoring** via `Watch()` with callback notifications
   - A watch ends quietly when its context is cancelled or its client is closed (`Close()` or `Disconnect()`). Closing cancels the client's watches before it disconnects; it does not wait for a callback in progress, whose calls on the client then fail. Once the client is closing, any end of a stream is quiet; otherwise any end other than the caller's cancellation panics. `Watch()` on a closed client returns `FailedPrecondition`, and closing a client again returns nil.
+  - A collection's `Lifetime()` (`ClientLifetime`) returns a context that ends when its client is closed, before it disconnects. A table's reconciler runs under it, so it ends with the client too.
 - **Bulk operations** with `FindMany()` and `DeleteMany()`
 - **Conditional updates** with `UpdateOneWithSpec()`: `$set`, `$inc` and `$unset` on one document, applied only if it matches `spec.Match`, reporting whether it matched. No updated document is returned.
 

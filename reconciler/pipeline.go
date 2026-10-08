@@ -37,6 +37,9 @@ type Pipeline struct {
 	reconciler reconcilerFunc
 }
 
+// Enqueue adds k to the pipeline unless it is already pending. It
+// returns the context's error once the pipeline has stopped, including
+// when it stops while Enqueue waits for room in the pipeline.
 func (p *Pipeline) Enqueue(k any) error {
 	// do not allow if the context is already closed
 	if p.ctx.Err() != nil {
@@ -52,7 +55,14 @@ func (p *Pipeline) Enqueue(k any) error {
 	if !loaded {
 		// if entry didn't exist in the map, ensure pushing the same
 		// to the buffered channel for processing by reconciler
-		p.pChannel <- k
+		// a full channel is drained only while the pipeline runs, so
+		// stop waiting once it has stopped
+		select {
+		case p.pChannel <- k:
+		case <-p.ctx.Done():
+			p.pMap.Delete(k)
+			return p.ctx.Err()
+		}
 	}
 
 	return nil
@@ -67,6 +77,11 @@ func (p *Pipeline) initialize() {
 			// pipeline processing is stopped return from here
 			return
 		case k := <-p.pChannel:
+			// select does not prefer Done when both are ready, so
+			// check again before processing an entry
+			if p.ctx.Err() != nil {
+				return
+			}
 			// process the entry available in the pipeline
 			// send it over to the reconciler for processing
 			// delete the key from the map while triggering
@@ -82,11 +97,17 @@ func (p *Pipeline) initialize() {
 				_ = p.Enqueue(k)
 			} else {
 				if res != nil && res.RequeueAfter != 0 {
-					go func(k1 any) {
-						// requeue the entry after specified time
-						time.Sleep(res.RequeueAfter)
-						_ = p.Enqueue(k1)
-					}(k)
+					go func(k1 any, after time.Duration) {
+						// requeue the entry after specified time,
+						// unless the pipeline stops first
+						timer := time.NewTimer(after)
+						defer timer.Stop()
+						select {
+						case <-timer.C:
+							_ = p.Enqueue(k1)
+						case <-p.ctx.Done():
+						}
+					}(k, res.RequeueAfter)
 				}
 			}
 		}

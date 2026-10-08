@@ -139,9 +139,16 @@ Deletes multiple entries matching a filter. Returns count of deleted entries.
 #### Reconciler Integration
 
 ```go
-func (mgr *Table[K, E]) ReconcilerGetAllKeys(ctx context.Context) ([]any, error)
+func (mgr *Table[K, E]) ReconcilerGetAllKeys() []any
+func (mgr *Table[K, E]) ReconcilerListKeys(ctx context.Context) ([]any, error)
 ```
-Returns all keys in the table for reconciler enumeration.
+Both return all keys in the table. `ReconcilerGetAllKeys` reads under
+`context.Background()` and panics if the read fails. `ReconcilerListKeys`
+reads under `ctx` and returns the error; the reconciler uses it to replay
+existing rows to a newly registered controller.
+
+The table's reconciler runs under its client's lifetime (see
+[Reconciler lifetime](#reconciler-lifetime)).
 
 ### cached_generic.go
 
@@ -255,9 +262,34 @@ Notify Reconciler
 #### Reconciler Integration
 
 ```go
-func (mgr *CachedTable[K, E]) ReconcilerGetAllKeys(ctx context.Context) ([]any, error)
+func (mgr *CachedTable[K, E]) ReconcilerGetAllKeys() []any
+func (mgr *CachedTable[K, E]) ReconcilerListKeys(ctx context.Context) ([]any, error)
 ```
-Returns all keys from cache (not database).
+Both return all keys from the database (not the cache), limited by the
+`WithFilter` filter if one is set, as for `Table`.
+
+### Reconciler lifetime
+
+A `Table` or `CachedTable` initializes its reconciler manager with the
+lifetime of its collection's client: the context returned by the
+collection's `Lifetime()` method (`db.ClientLifetime`), which ends when the
+client is closed. Closing the client therefore ends, quietly:
+
+- each registered controller's pipeline; an entry still queued is not
+  reconciled, and a `Reconcile` already running finishes;
+- the replay of existing rows started by `Register`, including its listing
+  read;
+- requeues waiting for their `RequeueAfter` delay;
+- change notifications, including one waiting for room in a full pipeline,
+  which are dropped.
+
+While the client is open every failure behaves as before: a replay listing
+that fails panics. A collection that does not implement `db.ClientLifetime`
+(for example a fake embedding `db.StoreCollection`) gives
+`context.Background()`, and its reconciler runs for the life of the process.
+A wrapper around a client's collection must forward `Lifetime()` for its
+table's reconciler to end with the client. `Register` on a table whose
+client is closed returns `FailedPrecondition`.
 
 ## Usage Examples
 
