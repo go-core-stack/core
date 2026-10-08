@@ -422,10 +422,18 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 	default:
 		return errors.Wrapf(errors.InvalidArgument, "Invalid watch filter pipeline type specified, %v", v)
 	}
-	// start watching on the collection with passed context
-	stream, err := c.col.Watch(ctx, filter)
+	// the stream runs under a context that also ends when the client
+	// is closed, so closing the client ends the watch
+	streamCtx, release, err := c.parent.client.streamContext(ctx)
 	if err != nil {
 		return err
+	}
+
+	// start watching on the collection with the stream context
+	stream, err := c.col.Watch(streamCtx, filter)
+	if err != nil {
+		release()
+		return c.parent.client.streamOpenError(err)
 	}
 
 	// run the loop on stream in a separate go routine
@@ -434,6 +442,7 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 	go func() {
 		// take a snapshot of keyTpe for processing watch
 		keyType := c.keyType
+		defer release()
 		// ensure closing of the open stream in case of returning from here
 		// keeping the handles and stack clean
 		// Note: this may not be required, if loop doesn't require it
@@ -443,13 +452,14 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 			_ = stream.Close(context.Background())
 		}()
 		defer func() {
-			if !errors.Is(ctx.Err(), context.Canceled) {
+			if !streamEndExpected(ctx, c.parent.client.done) {
 				// panic if the return from this function is not
-				// due to context being canceled
+				// due to context being canceled or the client
+				// being closed
 				log.Panicf("End of stream observed due to error %s", stream.Err())
 			}
 		}()
-		for stream.Next(ctx) {
+		for stream.Next(streamCtx) {
 			var data bson.M
 			if err := stream.Decode(&data); err != nil {
 				log.Printf("Closing watch due to decoding error %s", err)
@@ -611,16 +621,25 @@ func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflec
 		opts.SetStartAtOperationTime(timestamp)
 	}
 
-	// start watching on the collection with required context
-	stream, err := c.col.Watch(ctx, mongo.Pipeline{}, opts)
+	// the stream runs under a context that also ends when the client
+	// is closed, so closing the client ends the event logger
+	streamCtx, release, err := c.parent.client.streamContext(ctx)
 	if err != nil {
 		return err
+	}
+
+	// start watching on the collection with the stream context
+	stream, err := c.col.Watch(streamCtx, mongo.Pipeline{}, opts)
+	if err != nil {
+		release()
+		return c.parent.client.streamOpenError(err)
 	}
 
 	// run the loop on stream in a separate go routine
 	// allowing the watch starter to resume control and work with
 	// managing Watch stream by virtue of passed context
 	go func() {
+		defer release()
 		// ensure closing of the open stream in case of returning from here
 		// keeping the handles and stack clean
 		// Note: this may not be required, if loop doesn't require it
@@ -630,13 +649,14 @@ func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflec
 			_ = stream.Close(context.Background())
 		}()
 		defer func() {
-			if !errors.Is(ctx.Err(), context.Canceled) {
+			if !streamEndExpected(ctx, c.parent.client.done) {
 				// panic if the return from this function is not
-				// due to context being canceled
+				// due to context being canceled or the client
+				// being closed
 				log.Panicf("End of stream observed due to error %s", stream.Err())
 			}
 		}()
-		for stream.Next(ctx) {
+		for stream.Next(streamCtx) {
 			event := reflect.New(eventType)
 
 			if err := stream.Decode(event.Interface()); err != nil {
@@ -658,7 +678,8 @@ func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflec
 
 type mongoStore struct {
 	Store
-	db *mongo.Database
+	client *mongoClient // client this store was obtained from
+	db     *mongo.Database
 }
 
 func (s *mongoStore) GetCollection(name string) StoreCollection {
@@ -679,6 +700,52 @@ func (s *mongoStore) Name() string {
 type mongoClient struct {
 	StoreClient
 	client *mongo.Client
+
+	// done ends when the client is closed; every change stream started
+	// through this client runs under a context that ends with it
+	done context.Context
+	// stop ends done; it is called before the driver client is
+	// disconnected, so the stream loops end as closed rather than
+	// failing on a disconnected client
+	stop context.CancelFunc
+}
+
+// streamEndExpected reports whether a change stream loop that has ended
+// should end quietly: the context passed by the caller was cancelled, or
+// the client is closing (done has ended). Once the client is closing, any
+// end is quiet, including a failure that races the close. Any other end,
+// including the caller's context passing its deadline, is unexpected.
+func streamEndExpected(ctx, done context.Context) bool {
+	return errors.Is(ctx.Err(), context.Canceled) || done.Err() != nil
+}
+
+// streamContext returns the context a change stream started for the
+// caller's ctx runs under. It ends when ctx ends or when the client is
+// closed, whichever comes first. release must be called once the stream
+// is no longer used, so nothing is kept per stream after it ends. It
+// returns a FailedPrecondition error if the client is already closed.
+func (c *mongoClient) streamContext(ctx context.Context) (context.Context, func(), error) {
+	if c.done.Err() != nil {
+		return nil, nil, errors.Wrap(errors.FailedPrecondition, "client is closed")
+	}
+	streamCtx, cancel := context.WithCancel(ctx)
+	stopAfter := context.AfterFunc(c.done, cancel)
+	release := func() {
+		stopAfter()
+		cancel()
+	}
+	return streamCtx, release, nil
+}
+
+// streamOpenError returns the error for a change stream that failed to
+// open. If the client was closed while the stream was opening, the
+// failure is reported as the client being closed, as it is for a stream
+// opened after the client was closed.
+func (c *mongoClient) streamOpenError(err error) error {
+	if c.done.Err() != nil {
+		return errors.Wrapf(errors.FailedPrecondition, "client is closed: %s", err)
+	}
+	return err
 }
 
 type MongoConfig struct {
@@ -746,8 +813,11 @@ func NewMongoClient(conf *MongoConfig) (StoreClient, error) {
 	}
 
 	// make the MongoStore struct hear and then call schema stuff here
+	done, stop := context.WithCancel(context.Background())
 	mClient := &mongoClient{
 		client: client,
+		done:   done,
+		stop:   stop,
 	}
 	return mClient, nil
 }
@@ -760,7 +830,8 @@ func (c *mongoClient) GetDataStore(dbName string) Store {
 
 	// make the MongoStore struct hear and then call schema stuff here
 	mongoStore := &mongoStore{
-		db: store,
+		client: c,
+		db:     store,
 	}
 
 	// TODO(prabhjot) we will look forward to enabling references as part of a separate effort
@@ -791,14 +862,34 @@ const defaultCloseTimeout = 15 * time.Second
 // waits for in-use connections to be returned, so a stuck or leaked
 // operation cannot hang shutdown indefinitely. Callers that want to own the
 // shutdown deadline should prefer this over Close.
+//
+// Before disconnecting, it cancels every change stream started through this
+// client (Watch and the event logger), so their loops end quietly instead
+// of failing on a disconnected client. It does not wait for a callback in
+// progress; that callback's calls on this client then fail. A Watch started after Disconnect
+// returns a FailedPrecondition error.
+//
+// Disconnect and Close may be called more than once. Only the first call
+// disconnects; later calls return nil, without waiting for a first call
+// still in progress.
 func (c *mongoClient) Disconnect(ctx context.Context) error {
-	return c.client.Disconnect(ctx)
+	// end the change streams first, so they observe a closed client
+	// rather than a failed read
+	c.stop()
+	err := c.client.Disconnect(ctx)
+	if errors.Is(err, mongo.ErrClientDisconnected) {
+		// already disconnected by an earlier call
+		return nil
+	}
+	return err
 }
 
 // Close implements io.Closer by disconnecting the underlying MongoDB driver
 // client using a default bounded timeout (defaultCloseTimeout). It lets a
 // consumer close the client through the standard io.Closer contract; callers
 // that need to control the shutdown deadline should use Disconnect(ctx).
+// Like Disconnect, it first ends the change streams started through this
+// client, and calling it more than once is safe.
 func (c *mongoClient) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
 	defer cancel()
