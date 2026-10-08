@@ -85,3 +85,17 @@ by kubernetes or equivalent systems
 This is a wrapper over an above standard net/smtp providing client and other
 constructs to work with emails based triggers and communication over emails
 while device compatible smtp email account is provided
+
+### YAML Unknown Keys (utils/yamlkeys/)
+Decodes a YAML document with gopkg.in/yaml.v3 tolerantly and returns the keys
+the target type does not read, so a key added by a newer version or left
+behind by an older one does not fail the decode, while misspelt keys are still
+reported instead of silently becoming "not set"
+- Uses yaml.v3's own strict check (KnownFields), so which keys count as
+  unknown is yaml.v3's answer, for inline structs and maps, merges and
+  aliases; types that decode themselves are documented separately
+- Reports each key as yaml.v3 states it, with its line:
+  `line 3: field portt not found in type config.Server`
+- Type and parse errors still fail the decode
+- Costs what a strict yaml.v3 decode costs; bound the size of untrusted
+  documents
