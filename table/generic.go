@@ -254,8 +254,9 @@ func (t *Table[K, E]) Initialize(col db.StoreCollection) error {
 		return err
 	}
 
-	// Initialize the reconciler manager
-	err = t.ManagerImpl.Initialize(context.Background(), t)
+	// Initialize the reconciler manager, which ends when the
+	// collection's client is closed
+	err = t.ManagerImpl.Initialize(clientLifetime(col), t)
 	if err != nil {
 		return err
 	}
@@ -266,6 +267,20 @@ func (t *Table[K, E]) Initialize(col db.StoreCollection) error {
 
 	t.col = col
 	return nil
+}
+
+// clientLifetime returns the context a table's reconciler runs under: one
+// that ends when the collection's client is closed, so its pipelines,
+// requeues and replay of existing keys end with the client. A collection
+// that does not implement db.ClientLifetime gives context.Background, and
+// the reconciler then runs for the life of the process.
+func clientLifetime(col db.StoreCollection) context.Context {
+	if l, ok := col.(db.ClientLifetime); ok {
+		if ctx := l.Lifetime(); ctx != nil {
+			return ctx
+		}
+	}
+	return context.Background()
 }
 
 // callback is invoked on collection changes and notifies the reconciler.
@@ -279,18 +294,29 @@ type keyOnly[K any] struct {
 }
 
 // ReconcilerGetAllKeys returns all keys in the table.
-// Used by the reconciler to enumerate all managed entries.
+// It panics if the keys cannot be read.
 func (t *Table[K, E]) ReconcilerGetAllKeys() []any {
-	list := []keyOnly[K]{}
-	keys := []any{}
-	err := t.col.FindMany(context.Background(), nil, &list)
+	keys, err := t.ReconcilerListKeys(context.Background())
 	if err != nil {
 		log.Panicf("got error while fetching all keys %s", err)
+	}
+	return keys
+}
+
+// ReconcilerListKeys returns all keys in the table, reading under ctx.
+// The reconciler uses it to replay existing entries to a newly
+// registered controller, so the read ends when the reconciler does.
+func (t *Table[K, E]) ReconcilerListKeys(ctx context.Context) ([]any, error) {
+	list := []keyOnly[K]{}
+	keys := []any{}
+	err := t.col.FindMany(ctx, nil, &list)
+	if err != nil {
+		return nil, err
 	}
 	for _, k := range list {
 		keys = append(keys, &k.Key)
 	}
-	return []any(keys)
+	return keys, nil
 }
 
 // Insert adds a new entry to the table with the given key.

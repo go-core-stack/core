@@ -130,6 +130,15 @@ type StoreCollection interface {
 	startEventLogger(ctx context.Context, eventType reflect.Type, timestamp *bson.Timestamp) error
 }
 
+// ClientLifetime is implemented by a collection whose client can be
+// closed. Lifetime returns a context that ends when that client is
+// closed, so work started for the collection in the background can end
+// with the client. It is optional: a StoreCollection that does not
+// implement it gives such work no end of its own.
+type ClientLifetime interface {
+	Lifetime() context.Context
+}
+
 // interface definition for a store, responsible for holding group
 // of collections
 type Store interface {
