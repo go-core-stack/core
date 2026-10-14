@@ -119,6 +119,63 @@ workloads never need. See go-core-stack/core#126 for the full rationale; it
 should be gated behind a concrete, demonstrated starvation requirement rather
 than built speculatively.
 
+## Ephemeral tables: process-owned entries with meta
+
+A lock says only "this process holds key K". Some state has the same
+lifetime but carries a little data: "this process holds a connection for
+key K, and here is what it said about itself". `EphemeralTable[K, M]` holds
+that: each entry is owned by the process that wrote it and carries a meta
+value of type `M`.
+
+```go
+tbl, err := sync.LocateEphemeralTable[ConnKey, ConnInfo](store, "connections")
+entry, err := tbl.Create(ctx, key, &ConnInfo{...}) // AlreadyExists if the key exists
+info, err := tbl.Find(ctx, key)                    // NotFound if there is none
+err = entry.Close()                                // deletes the entry
+```
+
+Owner cleanup is the lock table's, shared rather than copied: when an owner
+leaves the owner-table, every entry it wrote is deleted, and when a table is
+located, entries of owners no longer present are deleted too. That cleanup is
+done by the other live processes: a crashed process's owner row is aged out
+by another owner's ticker once it has missed three 10s updates (the
+defaults), and its entries are deleted by a process that has the table
+located, through its watch. With such a peer running, an entry outlives a
+crashed process by roughly 20-40s plus change-stream latency, as a lock
+does. With none, the entry stays until a process locates the table; if the
+owner row has not aged out by then, it goes once that process's ticker ages
+the row out. A reader keeps finding the entry until then; a reader runs no
+cleanup of its own.
+
+`Close` deletes the entry only while it is still this process's: the delete
+matches the key and the owner. A `Close` that arrives after owner cleanup has
+removed the entry returns NotFound and leaves alone an entry another process
+has since created under the same key.
+
+A process that only reads entries opens the table with
+`OpenEphemeralTableReader`. It needs no owner infrastructure (no
+`InitializeOwner`), sets up no watches and runs no cleanup; it has `Find`
+only.
+
+### Lock or ephemeral table
+
+| The process needs to | Use |
+|---|---|
+| Hold a key exclusively, and let others wait for its release | `LockTable` with `RegisterLockRelease` |
+| Say it holds a key and publish a little data about it for others to read | `EphemeralTable` |
+| Read what other processes have published, without owning anything | `OpenEphemeralTableReader` |
+
+The key type `K` must be a struct: the table's watch decodes each change
+event's key as a document, and a scalar key would end that watch with a
+panic at the first write. `LocateEphemeralTable` and `OpenEphemeralTableReader`
+refuse any other key type with InvalidArgument. (`LockTable` has the same need and does not check it.)
+
+A name in a store is one table: `LocateEphemeralTable` returns the same table
+for the same store and name, and refuses a name already used with other type
+parameters or by a `LockTable`, as `LocateLockTable` does. The meta value is
+written once, at `Create`; to change it, close the entry and create it again.
+There is no release notification for ephemeral entries.
+
 ## No read/write lock (considered and rejected)
 
 A read/write lock — parallel readers, exclusive writer — was evaluated for

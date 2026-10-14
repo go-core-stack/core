@@ -5,13 +5,9 @@ package sync
 
 import (
 	"context"
-	"log"
 	"reflect"
 	"sync"
 	"time"
-
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/go-core-stack/core/db"
 	"github.com/go-core-stack/core/errors"
@@ -19,7 +15,8 @@ import (
 )
 
 var (
-	// map for holding initialized lock tables
+	// map for holding initialized lock and ephemeral tables; one name
+	// in one store is one table, whatever its kind and type parameters
 	lockTables map[lockTableKey]interface{} = make(map[lockTableKey]interface{})
 
 	// mutex for securing lockTable Map
@@ -67,6 +64,9 @@ type LockTable[K any] struct {
 
 	// Context cancel function
 	cancelFn context.CancelFunc
+
+	// owner cleanup for the locks in col
+	owned *ownedEntries
 }
 
 func (t *LockTable[K]) Callback(op string, wKey interface{}) {
@@ -79,32 +79,7 @@ func (t *LockTable[K]) Callback(op string, wKey interface{}) {
 
 	// for non-delete events, verify the owner is still alive
 	// and cleanup orphaned locks if the owner no longer exists
-	data := &lockData{}
-	err := t.col.FindOne(context.Background(), wKey, data)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return
-		}
-		log.Panicln("failed to find lock entry corresponding to key", wKey)
-	}
-
-	oKey := &ownerKey{
-		Name: data.Owner,
-	}
-	oData := &ownerData{}
-	err = ownerTable.col.FindOne(context.Background(), oKey, oData)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			filter := bson.D{{
-				Key:   "owner",
-				Value: oKey.Name,
-			}}
-			_, err := t.col.DeleteMany(t.ctx, filter)
-			if err != nil && !errors.IsNotFound(err) {
-				log.Panicf("failed to perform delete of locks for owner %s, got error: %s", oKey.Name, err)
-			}
-		}
-	}
+	t.owned.checkOwner(wKey)
 }
 
 // ReconcilerGetAllKeys returns list as reconciler for lock table
@@ -119,59 +94,6 @@ func (t *LockTable[K]) ReconcilerGetAllKeys() []any {
 // with the lock key whenever a lock is released.
 func (t *LockTable[K]) RegisterLockRelease(name string, ctrl reconciler.Controller) error {
 	return t.ManagerImpl.Register(name, ctrl)
-}
-
-func (t *LockTable[K]) handleOwnerRelease(op string, wKey interface{}) {
-	key := wKey.(*ownerKey)
-
-	filter := bson.D{{
-		Key:   "owner",
-		Value: key.Name,
-	}}
-	_, err := t.col.DeleteMany(t.ctx, filter)
-	if err != nil && !errors.IsNotFound(err) {
-		log.Panicf("failed to perform delete of Locks for owner %s, got error: %s", key.Name, err)
-	}
-}
-
-// cleanupOrphanedLocks scans all existing locks and deletes any whose
-// owner no longer exists in the owner-table. This is called once during
-// LocateLockTable initialization to handle stale locks left by replicas
-// that crashed before cleanup could run.
-func (t *LockTable[K]) cleanupOrphanedLocks() {
-	var entries []lockData
-	err := t.col.FindMany(context.Background(), nil, &entries)
-	if err != nil {
-		log.Printf("lock-table: failed to scan locks for orphan cleanup: %v", err)
-		return
-	}
-
-	// Collect unique owners from all locks.
-	owners := make(map[string]bool)
-	for _, e := range entries {
-		if e.Owner != "" {
-			owners[e.Owner] = true
-		}
-	}
-
-	// Check each owner against the owner-table and delete orphans.
-	for ownerName := range owners {
-		oKey := &ownerKey{Name: ownerName}
-		oData := &ownerData{}
-		err := ownerTable.col.FindOne(context.Background(), oKey, oData)
-		if err != nil && errors.IsNotFound(err) {
-			filter := bson.D{{
-				Key:   "owner",
-				Value: ownerName,
-			}}
-			_, delErr := t.col.DeleteMany(t.ctx, filter)
-			if delErr != nil && !errors.IsNotFound(delErr) {
-				log.Printf("lock-table: failed to delete orphaned locks for owner %s: %v", ownerName, delErr)
-			} else {
-				log.Printf("lock-table: cleaned up orphaned locks for owner %s", ownerName)
-			}
-		}
-	}
 }
 
 func (t *LockTable[K]) TryAcquire(ctx context.Context, key *K) (Lock, error) {
@@ -218,6 +140,12 @@ func LocateLockTable[K any](store db.Store, name string) (*LockTable[K], error) 
 			col:      col,
 			ctx:      ctx,
 			cancelFn: cancelFn,
+			owned: &ownedEntries{
+				col:    col,
+				ctx:    ctx,
+				kind:   "locks",
+				prefix: "lock-table",
+			},
 		}
 
 		// set the key type for watch notification decoding
@@ -240,18 +168,8 @@ func LocateLockTable[K any](store db.Store, name string) (*LockTable[K], error) 
 			return nil, err
 		}
 
-		matchDeleteStage := mongo.Pipeline{
-			bson.D{{
-				Key: "$match",
-				Value: bson.D{{
-					Key:   "operationType",
-					Value: "delete",
-				}},
-			}},
-		}
-
 		// watch only for delete notification of lock owner
-		err = ownerTable.col.Watch(ctx, matchDeleteStage, table.handleOwnerRelease)
+		err = table.owned.watchOwnerRelease(ctx)
 		if err != nil {
 			cancelFn()
 			return nil, err
@@ -270,7 +188,7 @@ func LocateLockTable[K any](store db.Store, name string) (*LockTable[K], error) 
 		// and its owner entry was already aged out before we started
 		// watching change streams — no change event will fire for
 		// those stale locks, so we must clean them up eagerly.
-		table.cleanupOrphanedLocks()
+		table.owned.cleanupOrphans()
 
 		lockTables[lockTableKey{store.Name(), name}] = table
 	} else {
