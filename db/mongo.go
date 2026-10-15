@@ -71,10 +71,7 @@ func isTransientMongoError(err error) bool {
 	}
 	// bare network errors that may not carry a driver error label.
 	var netErr net.Error
-	if base.As(err, &netErr) {
-		return true
-	}
-	return false
+	return base.As(err, &netErr)
 }
 
 // interprets mongo db error and returns library parsable error codes

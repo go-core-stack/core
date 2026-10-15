@@ -204,7 +204,7 @@ func TestRateLimitedReader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap reader: %v", err)
 	}
-	defer rlReader.Close()
+	defer func() { _ = rlReader.Close() }()
 
 	start := time.Now()
 	buf := make([]byte, 500)
@@ -242,7 +242,7 @@ func TestRateLimitedReaderChunking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap reader: %v", err)
 	}
-	defer rlReader.Close()
+	defer func() { _ = rlReader.Close() }()
 
 	// Try to read 100 bytes at once (larger than burst of 50)
 	buf := make([]byte, 100)
@@ -272,7 +272,7 @@ func TestRateLimitedReaderContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap reader: %v", err)
 	}
-	defer rlReader.Close()
+	defer func() { _ = rlReader.Close() }()
 
 	// Cancel context immediately
 	cancel()
@@ -306,7 +306,7 @@ func TestRateLimitedReaderClose(t *testing.T) {
 		t.Fatalf("expected 1 in-use limiter, got %d", len(mgr.inUse))
 	}
 
-	rlReader.Close()
+	_ = rlReader.Close()
 
 	// After closing, limiter should not be in use
 	if len(mgr.inUse) != 0 {
@@ -327,7 +327,7 @@ func TestRateLimitedHTTPResponseWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap writer: %v", err)
 	}
-	defer rlWriter.Close()
+	defer func() { _ = rlWriter.Close() }()
 
 	data := bytes.Repeat([]byte("a"), 500)
 	start := time.Now()
@@ -367,7 +367,7 @@ func TestRateLimitedHTTPResponseWriterChunking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap writer: %v", err)
 	}
-	defer rlWriter.Close()
+	defer func() { _ = rlWriter.Close() }()
 
 	// Write 200 bytes (larger than burst of 50)
 	data := bytes.Repeat([]byte("a"), 200)
@@ -399,7 +399,7 @@ func TestRateLimitedHTTPResponseWriterContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap writer: %v", err)
 	}
-	defer rlWriter.Close()
+	defer func() { _ = rlWriter.Close() }()
 
 	// Cancel context immediately
 	cancel()
@@ -433,7 +433,7 @@ func TestRateLimitedHTTPResponseWriterClose(t *testing.T) {
 		t.Fatalf("expected 1 in-use limiter, got %d", len(mgr.inUse))
 	}
 
-	rlWriter.Close()
+	_ = rlWriter.Close()
 
 	// After closing, limiter should not be in use
 	if len(mgr.inUse) != 0 {
@@ -454,11 +454,11 @@ func TestRateLimitedHTTPResponseWriterHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap writer: %v", err)
 	}
-	defer rlWriter.Close()
+	defer func() { _ = rlWriter.Close() }()
 
 	rlWriter.Header().Set("Content-Type", "text/plain")
 	rlWriter.WriteHeader(http.StatusOK)
-	rlWriter.Write([]byte("test"))
+	_, _ = rlWriter.Write([]byte("test"))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
@@ -491,7 +491,7 @@ func TestConcurrentReaderAccess(t *testing.T) {
 				t.Errorf("failed to wrap reader: %v", err)
 				return
 			}
-			defer rlReader.Close()
+			defer func() { _ = rlReader.Close() }()
 
 			buf := make([]byte, 100)
 			_, err = io.ReadFull(rlReader, buf)
@@ -531,7 +531,7 @@ func TestConcurrentWriterAccess(t *testing.T) {
 				t.Errorf("failed to wrap writer: %v", err)
 				return
 			}
-			defer rlWriter.Close()
+			defer func() { _ = rlWriter.Close() }()
 
 			data := bytes.Repeat([]byte("a"), 100)
 			_, err = rlWriter.Write(data)
@@ -603,7 +603,7 @@ func TestRateLimitedReaderOverReservation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap reader: %v", err)
 	}
-	defer rlReader.Close()
+	defer func() { _ = rlReader.Close() }()
 
 	// Run the read operation in a goroutine
 	done := make(chan int)
@@ -696,7 +696,7 @@ func TestRateLimitedHTTPResponseWriterOverReservation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap writer: %v", err)
 	}
-	defer rlWriter.Close()
+	defer func() { _ = rlWriter.Close() }()
 
 	data := bytes.Repeat([]byte("a"), 100)
 
@@ -761,13 +761,13 @@ func TestRateLimitingAccuracy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap reader: %v", err)
 	}
-	defer rlReader.Close()
+	defer func() { _ = rlReader.Close() }()
 
 	// Measure time for unlimited read
 	unlimitedData := bytes.Repeat([]byte("x"), 500)
 	unlimitedReader := io.NopCloser(bytes.NewReader(unlimitedData))
 	unlimitedStart := time.Now()
-	io.ReadAll(unlimitedReader)
+	_, _ = io.ReadAll(unlimitedReader)
 	unlimitedDuration := time.Since(unlimitedStart)
 
 	// Now measure rate-limited read
@@ -822,7 +822,7 @@ func TestSmallReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to wrap reader: %v", err)
 	}
-	defer rlReader.Close()
+	defer func() { _ = rlReader.Close() }()
 
 	// Reading with OneByteReader ensures we get 1-byte reads
 	buf := make([]byte, 10)

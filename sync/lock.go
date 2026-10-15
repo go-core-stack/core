@@ -46,10 +46,6 @@ type lockData struct {
 	Owner      string `bson:"owner,omitempty"`
 }
 
-type lockKeyOnly[K any] struct {
-	Key K `bson:"_id,omitempty"`
-}
-
 type LockTable[K any] struct {
 	reconciler.ManagerImpl
 
@@ -93,7 +89,7 @@ func (t *LockTable[K]) ReconcilerGetAllKeys() []any {
 // release notifications. The controller's Reconcile method will be called
 // with the lock key whenever a lock is released.
 func (t *LockTable[K]) RegisterLockRelease(name string, ctrl reconciler.Controller) error {
-	return t.ManagerImpl.Register(name, ctrl)
+	return t.Register(name, ctrl)
 }
 
 func (t *LockTable[K]) TryAcquire(ctx context.Context, key *K) (Lock, error) {
@@ -162,7 +158,7 @@ func LocateLockTable[K any](store db.Store, name string) (*LockTable[K], error) 
 		}
 
 		// initialize the reconciler manager for lock release notifications
-		err = table.ManagerImpl.Initialize(ctx, table)
+		err = table.Initialize(ctx, table)
 		if err != nil {
 			cancelFn()
 			return nil, err
