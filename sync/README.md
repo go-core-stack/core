@@ -103,14 +103,25 @@ Database-backed locks have inherent trade-offs we accept rather than engineer
 around:
 
 - **Barging, not fair.** On release, every waiter is notified and races to
-  re-acquire; acquisition order is not guaranteed. Mutual exclusion
-  (correctness) is guaranteed; FIFO ordering (fairness) is not.
+  re-acquire; acquisition order is not guaranteed. Mutual exclusion holds
+  while the holder's owner entry stays in the owner table (see the lease
+  below); FIFO ordering (fairness) is not provided.
 - **Coarse-grained and relatively slow** — a round-trip plus change-stream
   propagation is on the order of tens of milliseconds. These locks suit
   briefly-held, low-contention, leader-ish sections ("one replica reconciles
   this key at a time"), not high-frequency fine-grained locking.
 - **Liveness is lease-bounded** — a lock held by a crashed process is cleaned
   up only after the owner ages out (~30s by default), not instantly.
+- **A holder is not told it lost the lock.** Once a process's owner entry
+  leaves the owner table, owner cleanup releases its locks and another
+  process can acquire the same key while the first still holds its `Lock`.
+  The entry leaves when the process stops making progress for longer than
+  the age-out (paused, frozen, starved of CPU), when a peer ages it out early
+  (each peer judges age by its own clock and update interval), or when the
+  process's owner context is cancelled at shutdown. Until the first process
+  finds its owner entry gone and exits, both believe they hold the key. `Close` matches the key and the owner, so the stalled
+  process's late `Close` returns NotFound and leaves the new holder's lock
+  in place.
 
 A strict FIFO / ticket (bakery) lock is intentionally **not** provided. It
 would require a new atomic `FindOneAndUpdate` (returning the post-image)

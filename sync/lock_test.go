@@ -12,6 +12,7 @@ import (
 	"github.com/go-core-stack/core/db"
 	"github.com/go-core-stack/core/errors"
 	"github.com/go-core-stack/core/reconciler"
+	"github.com/google/uuid"
 )
 
 type lockKey struct {
@@ -178,5 +179,60 @@ func Test_LockReleaseNotification(t *testing.T) {
 
 	if ctrl.notified.Load() == 0 {
 		t.Errorf("expected lock release notification, but controller was not notified")
+	}
+}
+
+func Test_LockCloseLeavesTakenOverLock(t *testing.T) {
+	s := ephemeralTestStore(t, true)
+	tbl, err := LocateLockTable[lockKey](s, "lock-test-"+uuid.NewString())
+	if err != nil {
+		t.Fatalf("failed to locate lock table: %s", err)
+	}
+
+	// a lock still held is released by Close
+	held := &lockKey{Scope: "scope-1", Name: "held"}
+	lock, err := tbl.TryAcquire(context.Background(), held)
+	if err != nil {
+		t.Fatalf("failed to acquire lock: %s", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("close of a held lock: %s", err)
+	}
+	again, err := tbl.TryAcquire(context.Background(), held)
+	if err != nil {
+		t.Errorf("lock not released by close: %s", err)
+	} else {
+		_ = again.Close()
+	}
+
+	key := &lockKey{Scope: "scope-1", Name: "taken-over"}
+	lock, err = tbl.TryAcquire(context.Background(), key)
+	if err != nil {
+		t.Fatalf("failed to acquire lock: %s", err)
+	}
+
+	// owner cleanup releases this process's lock, and another owner then
+	// acquires the same key
+	if err := tbl.col.DeleteOne(context.Background(), key); err != nil {
+		t.Fatalf("failed to delete lock: %s", err)
+	}
+	other := fakeOwner(t)
+	defer func() { _ = ownerTable.col.DeleteOne(context.Background(), &ownerKey{Name: other}) }()
+	err = tbl.col.InsertOne(context.Background(), key, &lockData{CreateTime: time.Now().Unix(), Owner: other})
+	if err != nil {
+		t.Fatalf("failed to acquire lock as %s: %s", other, err)
+	}
+	defer func() { _ = tbl.col.DeleteOne(context.Background(), key) }()
+
+	err = lock.Close()
+	if !errors.IsNotFound(err) {
+		t.Errorf("late close: got %v, want NotFound", err)
+	}
+	data := &lockData{}
+	if err := tbl.col.FindOne(context.Background(), key, data); err != nil {
+		t.Fatalf("the other owner's lock is gone after a late close: %s", err)
+	}
+	if data.Owner != other {
+		t.Errorf("lock held by %q, want %q", data.Owner, other)
 	}
 }
