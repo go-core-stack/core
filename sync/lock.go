@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/go-core-stack/core/db"
 	"github.com/go-core-stack/core/errors"
 	"github.com/go-core-stack/core/reconciler"
@@ -33,12 +35,23 @@ type Lock interface {
 }
 
 type lockImpl[K any] struct {
-	key *K
-	tbl *LockTable[K]
+	key   *K
+	owner string
+	tbl   *LockTable[K]
 }
 
+// Close releases the lock only while it is still this process's: the delete
+// matches the key and the owner, so a Close arriving after owner cleanup has
+// released the lock cannot release one another process has since acquired
+// under the same key. It returns NotFound when there is nothing of this
+// process's left to release.
 func (l *lockImpl[K]) Close() error {
-	return l.tbl.col.DeleteOne(context.Background(), l.key)
+	filter := bson.D{
+		{Key: "_id", Value: l.key},
+		{Key: "owner", Value: l.owner},
+	}
+	_, err := l.tbl.col.DeleteMany(context.Background(), filter)
+	return err
 }
 
 type lockData struct {
@@ -109,8 +122,9 @@ func (t *LockTable[K]) TryAcquire(ctx context.Context, key *K) (Lock, error) {
 	}
 
 	return &lockImpl[K]{
-		key: key,
-		tbl: t,
+		key:   key,
+		owner: data.Owner,
+		tbl:   t,
 	}, nil
 }
 
