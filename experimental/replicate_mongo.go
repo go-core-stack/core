@@ -41,11 +41,11 @@ func main() {
 	ctx := context.Background()
 	src, err := mongo.Connect(options.Client().ApplyURI(*srcURI).SetRetryReads(true))
 	must(err)
-	defer src.Disconnect(ctx)
+	defer func() { _ = src.Disconnect(ctx) }()
 
 	dst, err := mongo.Connect(options.Client().ApplyURI(*dstURI).SetRetryWrites(true))
 	must(err)
-	defer dst.Disconnect(ctx)
+	defer func() { _ = dst.Disconnect(ctx) }()
 
 	// 1) Open a DB-scope change stream to bookmark "now".
 	srcDBHandle := src.Database(*srcDB, options.Database().SetReadConcern(readconcern.Majority()))
@@ -63,7 +63,7 @@ func main() {
 
 	stream, err := srcDBHandle.Watch(ctx, pipeline, csOpts)
 	must(err)
-	defer stream.Close(ctx)
+	defer func(first *mongo.ChangeStream) { _ = first.Close(ctx) }(stream)
 
 	// Force a resume token / operation time as a bookmark.
 	_ = stream.TryNext(ctx)
@@ -91,7 +91,7 @@ func main() {
 	_ = stream.Close(ctx)
 	stream, err = srcDBHandle.Watch(ctx, pipeline, csOpts)
 	must(err)
-	defer stream.Close(ctx)
+	defer func() { _ = stream.Close(ctx) }()
 
 	log.Println("Replaying queued changes...")
 	if err := drainChanges(ctx, stream, dstDBHandle, time.Duration(*drainSec)*time.Second, *keepRun); err != nil {
@@ -160,7 +160,7 @@ func copyOneCollection(ctx context.Context, srcColl, dstColl *mongo.Collection, 
 	if err != nil {
 		return err
 	}
-	defer cur.Close(ctx)
+	defer func() { _ = cur.Close(ctx) }()
 
 	models := make([]mongo.WriteModel, 0, 5000)
 	flush := func() error {

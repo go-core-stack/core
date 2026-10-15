@@ -460,7 +460,7 @@ func Test_EnsureIndexes(t *testing.T) {
 
 	t.Run("Single_Ascending_Index", func(t *testing.T) {
 		col := s.GetCollection("idx_test_ascending")
-		defer col.DeleteMany(context.Background(), bson.D{})
+		defer func() { _, _ = col.DeleteMany(context.Background(), bson.D{}) }()
 
 		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
 			{
@@ -486,7 +486,7 @@ func Test_EnsureIndexes(t *testing.T) {
 
 	t.Run("Unique_Index", func(t *testing.T) {
 		col := s.GetCollection("idx_test_unique")
-		defer col.DeleteMany(context.Background(), bson.D{})
+		defer func() { _, _ = col.DeleteMany(context.Background(), bson.D{}) }()
 
 		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
 			{
@@ -517,7 +517,7 @@ func Test_EnsureIndexes(t *testing.T) {
 
 	t.Run("Compound_Index", func(t *testing.T) {
 		col := s.GetCollection("idx_test_compound")
-		defer col.DeleteMany(context.Background(), bson.D{})
+		defer func() { _, _ = col.DeleteMany(context.Background(), bson.D{}) }()
 
 		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
 			{
@@ -534,7 +534,7 @@ func Test_EnsureIndexes(t *testing.T) {
 
 	t.Run("Named_Index", func(t *testing.T) {
 		col := s.GetCollection("idx_test_named")
-		defer col.DeleteMany(context.Background(), bson.D{})
+		defer func() { _, _ = col.DeleteMany(context.Background(), bson.D{}) }()
 
 		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
 			{
@@ -549,7 +549,7 @@ func Test_EnsureIndexes(t *testing.T) {
 
 	t.Run("Idempotent", func(t *testing.T) {
 		col := s.GetCollection("idx_test_idempotent")
-		defer col.DeleteMany(context.Background(), bson.D{})
+		defer func() { _, _ = col.DeleteMany(context.Background(), bson.D{}) }()
 
 		idx := []IndexDefinition{
 			{
@@ -636,7 +636,7 @@ func Test_EnsureIndexes(t *testing.T) {
 
 	t.Run("Negative_TTL_Ignored", func(t *testing.T) {
 		col := s.GetCollection("idx_test_negative_ttl")
-		defer col.DeleteMany(context.Background(), bson.D{})
+		defer func() { _, _ = col.DeleteMany(context.Background(), bson.D{}) }()
 
 		// Negative TTL should be treated the same as zero (no TTL)
 		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
@@ -674,7 +674,7 @@ func Test_EnsureIndexes(t *testing.T) {
 
 	t.Run("Sparse_Index", func(t *testing.T) {
 		col := s.GetCollection("idx_test_sparse")
-		defer col.DeleteMany(context.Background(), bson.D{})
+		defer func() { _, _ = col.DeleteMany(context.Background(), bson.D{}) }()
 
 		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
 			{
@@ -697,7 +697,7 @@ func Test_EnsureIndexes(t *testing.T) {
 
 	t.Run("TTL_Index", func(t *testing.T) {
 		col := s.GetCollection("idx_test_ttl")
-		defer col.DeleteMany(context.Background(), bson.D{})
+		defer func() { _, _ = col.DeleteMany(context.Background(), bson.D{}) }()
 
 		ttl := 72 * time.Hour
 		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
@@ -744,7 +744,7 @@ func Test_EnsureIndexes(t *testing.T) {
 
 	t.Run("Conflicting_Index_Options", func(t *testing.T) {
 		col := s.GetCollection("idx_test_conflict")
-		defer col.DeleteMany(context.Background(), bson.D{})
+		defer func() { _, _ = col.DeleteMany(context.Background(), bson.D{}) }()
 
 		// Create a non-unique index on "desc"
 		err := col.EnsureIndexes(context.Background(), []IndexDefinition{
