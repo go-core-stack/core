@@ -8,8 +8,6 @@ import (
 	"reflect"
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
-
 	"github.com/go-core-stack/core/db"
 	"github.com/go-core-stack/core/errors"
 )
@@ -32,18 +30,12 @@ type ephemeralEntry[K any] struct {
 	col   db.StoreCollection
 }
 
-// Close deletes the entry only while it is still this process's: the delete
-// matches the key and the owner, so a Close arriving after owner cleanup has
-// removed the entry cannot delete one another process has since created under
-// the same key. It returns NotFound when there is nothing of this process's
-// left to delete.
+// Close deletes the entry only while it is still this process's (see
+// releaseOwned): a Close arriving after owner cleanup has removed the entry
+// cannot delete one another process has since created under the same key. It
+// returns NotFound when there is nothing of this process's left to delete.
 func (e *ephemeralEntry[K]) Close() error {
-	filter := bson.D{
-		{Key: "_id", Value: e.key},
-		{Key: "owner", Value: e.owner},
-	}
-	_, err := e.col.DeleteMany(context.Background(), filter)
-	return err
+	return releaseOwned(e.col, e.key, e.owner)
 }
 
 // EphemeralTable holds entries that live as long as the process that wrote

@@ -53,6 +53,21 @@ func (o *ownedEntries) deleteOwner(owner string) error {
 	return nil
 }
 
+// releaseOwned deletes one entry only while it is still the named owner's:
+// the delete matches the key and the owner, so a release arriving after
+// owner cleanup has removed the entry cannot delete one another process has
+// since written under the same key. It returns NotFound when there is
+// nothing of the owner's left to delete. Every handle that releases an
+// owned entry (a lock, an ephemeral entry) goes through it.
+func releaseOwned(col db.StoreCollection, key any, owner string) error {
+	filter := bson.D{
+		{Key: "_id", Value: key},
+		{Key: "owner", Value: owner},
+	}
+	_, err := col.DeleteMany(context.Background(), filter)
+	return err
+}
+
 // handleOwnerRelease is the owner-table delete watch: the owner has gone, so
 // its entries go too.
 func (o *ownedEntries) handleOwnerRelease(op string, wKey any) {
