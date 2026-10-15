@@ -119,9 +119,9 @@ around:
   the age-out (paused, frozen, starved of CPU), when a peer ages it out early
   (each peer judges age by its own clock and update interval), or when the
   process's owner context is cancelled at shutdown. Until the first process
-  finds its owner entry gone and exits, both believe they hold the key. `Close` matches the key and the owner, so the stalled
-  process's late `Close` returns NotFound and leaves the new holder's lock
-  in place.
+  finds its owner entry gone and exits, both believe they hold the key.
+  `Close` matches the key and the owner, so the first process's late
+  `Close` returns NotFound and leaves the new holder's lock in place.
 
 A strict FIFO / ticket (bakery) lock is intentionally **not** provided. It
 would require a new atomic `FindOneAndUpdate` (returning the post-image)
