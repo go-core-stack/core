@@ -81,6 +81,22 @@ last provider to trigger certain logics, while moving from 1 provider to
 multiple are typically handled due to a load balancer capabilities provided
 by kubernetes or equivalent systems
 
+### Settings Package (settings/)
+Settings package provides one shared, platform-wide record of settings that
+are decided once and acted on by many processes sharing a database. It owns
+its database the way the sync package owns its own, so every reader and
+writer meet on the same record
+- The record is a set of sections, one per setting, each owned by one writer
+  and written whole, so a write of one setting never touches another
+- A missing record, section or field means the setting is not set
+- Readers read from a cached table, and may register with its reconciler to
+  act on a change
+- Licensing writes only move forward: each value carries the time of the
+  inputs it was decided from, and a writer that has seen only older inputs
+  cannot overwrite a value decided from newer ones
+
+See the package documentation in [settings/doc.go](settings/doc.go).
+
 ### SMTP Wrapper
 This is a wrapper over an above standard net/smtp providing client and other
 constructs to work with emails based triggers and communication over emails
