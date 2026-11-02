@@ -433,12 +433,15 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 		return c.parent.client.streamOpenError(err)
 	}
 
+	// take a snapshot of keyType for processing watch, here rather than
+	// in the loop, so a later SetKeyType on this collection does not race
+	// the loop's read
+	keyType := c.keyType
+
 	// run the loop on stream in a separate go routine
 	// allowing the watch starter to resume control and work with
 	// managing Watch stream by virtue of passed context
 	go func() {
-		// take a snapshot of keyTpe for processing watch
-		keyType := c.keyType
 		defer release()
 		// ensure closing of the open stream in case of returning from here
 		// keeping the handles and stack clean

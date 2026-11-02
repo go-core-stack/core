@@ -162,6 +162,7 @@ type CachedTable[K comparable, E any] struct {
 	reconciler.ManagerImpl
 	cacheMu       sync.RWMutex
 	cache         map[K]*E
+	loadTouched   map[K]struct{} // keys the callback decided during the eager load; guarded by cacheMu
 	col           db.StoreCollection
 	readThrough   bool
 	filter        any // optional filter for FindMany (eager load + reconciler)
@@ -173,7 +174,7 @@ type CachedTable[K comparable, E any] struct {
 // For read-through caching, use InitializeWithConfig with WithReadThrough option.
 //
 // Returns an error if the table is already initialized, the entry or key type is a pointer,
-// or if the collection setup fails.
+// or if the collection setup or the eager load fails; see InitializeWithConfig.
 func (t *CachedTable[K, E]) Initialize(col db.StoreCollection) error {
 	return t.InitializeWithConfig(col)
 }
@@ -204,7 +205,11 @@ func (t *CachedTable[K, E]) Initialize(col db.StoreCollection) error {
 //	    }))
 //
 // Returns an error if the table is already initialized, the entry or key type is a pointer,
-// or if the collection setup fails.
+// or if the collection setup fails. With eager loading it also returns an error
+// if the keys cannot be listed or an entry cannot be read, other than one deleted
+// after the keys were listed: the table does not start with a partial cache.
+// A table whose initialization failed is left uninitialized, with its change
+// stream ended, and may be initialized again.
 func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ...CachedTableOption) error {
 	if t.col != nil {
 		return errors.Wrapf(errors.AlreadyExists, "Table is already initialized")
@@ -253,49 +258,131 @@ func (t *CachedTable[K, E]) InitializeWithConfig(col db.StoreCollection, opts ..
 		}
 	}
 
-	// Register callback for collection changes, using watch pipeline if configured
-	err = col.Watch(context.Background(), t.watchPipeline, t.callback)
+	// Register callback for collection changes, using watch pipeline if
+	// configured. The change stream is opened before the eager load, so a
+	// change made while the load runs still reaches the cache.
+	//
+	// If starting fails from here on, the stream is ended and the table is
+	// left uninitialized, so nothing of the failed start keeps running and
+	// Initialize can be called again. stopped is set under stopMu, so once
+	// it is set no callback is running or will run, and the table's fields
+	// are reset without racing one.
+	watchCtx, endWatch := context.WithCancel(context.Background())
+	var stopMu sync.RWMutex
+	stopped := false
+	started := false
+	defer func() {
+		if started {
+			return
+		}
+		stopMu.Lock()
+		stopped = true
+		stopMu.Unlock()
+		endWatch()
+		t.col = nil
+		t.cache = map[K]*E{}
+		t.loadTouched = nil
+	}()
+
+	// set before the stream starts, so the callback reads it without a
+	// race
+	t.col = col
+
+	err = col.Watch(watchCtx, t.watchPipeline, func(op string, wKey any) {
+		stopMu.RLock()
+		defer stopMu.RUnlock()
+		if !stopped {
+			t.callback(op, wKey)
+		}
+	})
 	if err != nil {
 		return err
 	}
 
-	// Initialize the reconciler manager, which ends when the
-	// collection's client is closed
-	err = t.ManagerImpl.Initialize(clientLifetime(col), t)
+	err = t.start()
 	if err != nil {
 		return err
 	}
 
+	started = true
+	return nil
+}
+
+// start completes InitializeWithConfig once the change stream is open: it
+// eagerly loads the cache unless the table is read-through, then
+// initializes the reconciler manager. The manager is initialized last, so
+// a failed load leaves it untouched for the next attempt.
+func (t *CachedTable[K, E]) start() error {
 	// The field index conditions are checked against; building it never
 	// fails, so it cannot stop a table from starting.
 	indexFor(reflect.TypeOf((*E)(nil)).Elem())
 
-	t.col = col
-
 	// Only eagerly load entries if read-through is disabled
 	if !t.readThrough {
+		// The change stream is open, so the callback may store or evict
+		// a key while the load runs. The load's read of that key may
+		// predate the change, and writing it afterwards would put back a
+		// value the callback has replaced, with no later event to correct
+		// it. The callback reads the row after each change it is told
+		// of, so what it decides is current or will be replaced by its
+		// next event; the load must not overwrite it.
+		//
+		// So the callback records each key it stores or evicts in
+		// loadTouched, and the load skips those. The callback's
+		// mark-and-write and the load's check-and-write are each done
+		// under cacheMu, so a callback either lands before the load's
+		// check and is seen, or after the load's write and replaces it;
+		// there is no window between them. A callback that wrote before
+		// loadTouched was set read the row before the load does, so the
+		// load's value is the newer one there. A callback whose read
+		// fails transiently decides nothing and marks nothing, so the
+		// load's value stands, stale at worst, as the staleness contract
+		// on CachedTable allows.
+		func() {
+			t.cacheMu.Lock()
+			defer t.cacheMu.Unlock()
+			t.loadTouched = map[K]struct{}{}
+		}()
+		defer func() {
+			t.cacheMu.Lock()
+			defer t.cacheMu.Unlock()
+			t.loadTouched = nil
+		}()
+
 		list := []keyOnly[K]{}
-		err = t.col.FindMany(context.Background(), t.filter, &list)
+		err := t.col.FindMany(context.Background(), t.filter, &list)
 		if err != nil {
-			return errors.Wrapf(errors.Unknown, "failed to eager-load keys: %s", err)
+			return preserveErrClass(err, "failed to eager-load keys")
 		}
 		for _, k := range list {
 			entry, err := t.DBFind(context.Background(), &k.Key)
 			if err != nil {
-				// this should not happen in regular scenarios
-				// log and return from here
-				log.Printf("failed to find an entry, got error: %s", err)
-			} else {
-				func() {
-					t.cacheMu.Lock()
-					defer t.cacheMu.Unlock()
-					t.cache[k.Key] = entry
-				}()
+				if errors.IsNotFound(err) {
+					// the entry was deleted after the keys were
+					// listed, so it is rightly absent from the cache
+					continue
+				}
+				// A missing entry reads as absent, not as unread,
+				// and only a change to it would load it later, so
+				// the table does not start with a partial cache.
+				return errors.WrapErrf(errors.GetErrCode(err), err, "failed to eager-load entry with key %v", k.Key)
 			}
+			func() {
+				t.cacheMu.Lock()
+				defer t.cacheMu.Unlock()
+				if _, ok := t.loadTouched[k.Key]; ok {
+					// the callback has already decided this
+					// key from a newer read
+					return
+				}
+				t.cache[k.Key] = entry
+			}()
 		}
 	}
 
-	return nil
+	// Initialize the reconciler manager, which ends when the
+	// collection's client is closed
+	return t.ManagerImpl.Initialize(clientLifetime(t.col), t)
 }
 
 // callback is invoked on collection changes and notifies the reconciler.
@@ -319,6 +406,7 @@ func (t *CachedTable[K, E]) callback(op string, wKey any) {
 					t.cacheMu.Lock()
 					defer t.cacheMu.Unlock()
 					delete(t.cache, *key)
+					t.markLoadTouched(*key)
 				}()
 			} else {
 				// Transient (Unavailable) or unknown failure: the DB could
@@ -333,10 +421,20 @@ func (t *CachedTable[K, E]) callback(op string, wKey any) {
 				t.cacheMu.Lock()
 				defer t.cacheMu.Unlock()
 				t.cache[*key] = entry
+				t.markLoadTouched(*key)
 			}()
 		}
 	}
 	t.NotifyCallback(wKey)
+}
+
+// markLoadTouched records, while the eager load runs, that the callback
+// has decided key, so the load does not overwrite it. The caller holds
+// cacheMu.
+func (t *CachedTable[K, E]) markLoadTouched(key K) {
+	if t.loadTouched != nil {
+		t.loadTouched[key] = struct{}{}
+	}
 }
 
 // ReconcilerGetAllKeys returns all keys in the table, read from the
