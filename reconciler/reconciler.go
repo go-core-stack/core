@@ -129,17 +129,22 @@ func (m *ManagerImpl) Register(name string, crtl Controller) error {
 		// means its client has been closed
 		return errors.Wrap(errors.FailedPrecondition, "reconciler manager has ended")
 	}
+	// the pipeline is set before the controller is published, as
+	// NotifyCallback may already be running and reads it from the moment
+	// the controller is in the map
 	data := &controllerData{
-		name:   name,
-		handle: crtl,
+		name:     name,
+		handle:   crtl,
+		pipeline: newPipeline(m.ctx, crtl.Reconcile),
 	}
 	_, loaded := m.controllers.LoadOrStore(name, data)
 	if loaded {
 		return errors.Wrapf(errors.AlreadyExists, "Reconclier %s, already exists", name)
 	}
 
-	// initiate a new pipeline for reconcilation triggers
-	data.pipeline = NewPipeline(m.ctx, crtl.Reconcile)
+	// start the pipeline only now, so a rejected registration leaves
+	// nothing running; an entry notified before this waits in its channel
+	go data.pipeline.initialize()
 
 	// ensure triggering reconciliation of existing entries
 	// separately for reconciliation by the controller

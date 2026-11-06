@@ -114,15 +114,21 @@ func (p *Pipeline) initialize() {
 	}
 }
 
-// Creates a New Pipeline for queuing up and processing entries provided
-// for reconciliation
-func NewPipeline(ctx context.Context, fn reconcilerFunc) *Pipeline {
-	p := &Pipeline{
+// Creates a Pipeline that holds what is enqueued, up to its buffer, and
+// processes nothing until initialize runs
+func newPipeline(ctx context.Context, fn reconcilerFunc) *Pipeline {
+	return &Pipeline{
 		ctx:        ctx,
 		pMap:       sync.Map{},
 		pChannel:   make(chan any, bufferLength),
 		reconciler: fn,
 	}
+}
+
+// Creates a New Pipeline for queuing up and processing entries provided
+// for reconciliation
+func NewPipeline(ctx context.Context, fn reconcilerFunc) *Pipeline {
+	p := newPipeline(ctx, fn)
 
 	// initialize the pipeline before passing it externally
 	// to start the core functionality
