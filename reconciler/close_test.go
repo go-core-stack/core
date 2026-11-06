@@ -18,7 +18,11 @@ import (
 	"github.com/go-core-stack/core/errors"
 )
 
-// goroutinesIn counts the goroutines whose stack contains frame.
+// goroutinesIn counts the goroutines whose stack contains frame. The count
+// is process-wide, so a test that starts a pipeline waits for it to end
+// before returning; a pipeline still exiting would be counted by the next
+// test's baseline. A goroutine not yet running has no such frame, so that
+// wait first needs the pipeline to have been counted.
 func goroutinesIn(frame string) int {
 	buf := make([]byte, 1<<20)
 	for {
@@ -101,6 +105,7 @@ func (c *gatedController) Reconcile(k any) (*Result, error) {
 // Once the manager's context has ended, a change notification is dropped
 // rather than panicking.
 func Test_NotifyAfterEndIsDropped(t *testing.T) {
+	loops := goroutinesIn(pipelineLoop)
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &keysParent{}
 	if err := m.Initialize(ctx, m); err != nil {
@@ -109,8 +114,10 @@ func Test_NotifyAfterEndIsDropped(t *testing.T) {
 	if err := m.Register("c", &gatedController{gate: make(chan struct{})}); err != nil {
 		t.Fatalf("register: %s", err)
 	}
+	waitGoroutines(t, pipelineLoop, loops+1)
 	cancel()
 	m.NotifyCallback("k")
+	waitGoroutines(t, pipelineLoop, loops)
 }
 
 // A notification that is waiting for room in a full pipeline when the
@@ -139,6 +146,7 @@ func Test_NotifyWaitingWhenEndedReturns(t *testing.T) {
 		}
 	}()
 	waitGoroutines(t, enqueueCall, before+1)
+	waitGoroutines(t, pipelineLoop, loops+1)
 
 	cancel()
 	select {
@@ -154,6 +162,7 @@ func Test_NotifyWaitingWhenEndedReturns(t *testing.T) {
 // listing that only ends with its context ends when the manager ends, and
 // the replay returns quietly.
 func Test_ReplayListingEndsWithManager(t *testing.T) {
+	loops := goroutinesIn(pipelineLoop)
 	ctx, cancel := context.WithCancel(context.Background())
 	listing := make(chan struct{})
 	m := &listerParent{list: func(lctx context.Context) ([]any, error) {
@@ -169,8 +178,10 @@ func Test_ReplayListingEndsWithManager(t *testing.T) {
 		t.Fatalf("register: %s", err)
 	}
 	<-listing
+	waitGoroutines(t, pipelineLoop, loops+1)
 	cancel()
 	waitGoroutines(t, replayLoop, before)
+	waitGoroutines(t, pipelineLoop, loops)
 	// give a late panic the chance to surface
 	time.Sleep(200 * time.Millisecond)
 }
@@ -195,6 +206,7 @@ func Test_ReplayWaitingWhenEndedReturns(t *testing.T) {
 		t.Fatalf("register: %s", err)
 	}
 	waitGoroutines(t, enqueueCall, waiting+1)
+	waitGoroutines(t, pipelineLoop, loops+1)
 	cancel()
 	waitGoroutines(t, replayLoop, before)
 	close(crtl.gate)
@@ -206,6 +218,7 @@ func Test_ReplayWaitingWhenEndedReturns(t *testing.T) {
 // select has no priority, so a loop without the check would still pick
 // the next entry half the time; twenty pipelines make that certain to show.
 func Test_PipelineStopsBeforeNextEntry(t *testing.T) {
+	loops := goroutinesIn(pipelineLoop)
 	ctx, cancel := context.WithCancel(context.Background())
 	crtls := make([]*gatedController, 20)
 	for i := range crtls {
@@ -237,6 +250,7 @@ func Test_PipelineStopsBeforeNextEntry(t *testing.T) {
 			t.Fatalf("pipeline %d: %d entries reconciled after it stopped", i, got-1)
 		}
 	}
+	waitGoroutines(t, pipelineLoop, loops)
 }
 
 // Register on a manager whose context has ended fails, rather than
@@ -258,9 +272,136 @@ func Test_RegisterAfterEndFails(t *testing.T) {
 	}
 }
 
+// An entry enqueued before a pipeline starts waits in it and is processed
+// once it starts.
+func Test_EntryEnqueuedBeforeStartIsProcessed(t *testing.T) {
+	loops := goroutinesIn(pipelineLoop)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan any, 1)
+	p := newPipeline(ctx, func(k any) (*Result, error) {
+		got <- k
+		return &Result{}, nil
+	})
+	if err := p.Enqueue("k"); err != nil {
+		t.Fatalf("enqueue: %s", err)
+	}
+	select {
+	case k := <-got:
+		t.Fatalf("processed %v before the pipeline started", k)
+	case <-time.After(50 * time.Millisecond):
+	}
+	go p.initialize()
+	select {
+	case k := <-got:
+		if k != "k" {
+			t.Fatalf("processed %v, expected k", k)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the entry was never processed")
+	}
+	cancel()
+	waitGoroutines(t, pipelineLoop, loops)
+}
+
+// A change notification running while controllers register finds each one's
+// pipeline set.
+func Test_NotifyWhileRegistering(t *testing.T) {
+	pipelines := goroutinesIn(pipelineLoop)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := &keysParent{}
+	if err := m.Initialize(ctx, m); err != nil {
+		t.Fatalf("initialize: %s", err)
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.NotifyCallback("k")
+			}
+		}
+	}()
+
+	gate := make(chan struct{})
+	close(gate)
+	crtls := make([]*gatedController, 500)
+	for i := range crtls {
+		crtls[i] = &gatedController{gate: gate}
+		if err := m.Register(fmt.Sprintf("c%d", i), crtls[i]); err != nil {
+			t.Fatalf("register: %s", err)
+		}
+	}
+	close(stop)
+	<-done
+
+	m.NotifyCallback("k")
+	deadline := time.Now().Add(10 * time.Second)
+	for i, c := range crtls {
+		for c.started.Load() == 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("controller %d never reconciled", i)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	cancel()
+	waitGoroutines(t, pipelineLoop, pipelines)
+}
+
+// A second registration of a name is refused, starts no pipeline, and leaves
+// the first controller receiving entries.
+func Test_DuplicateRegisterStartsNoPipeline(t *testing.T) {
+	pipelines := goroutinesIn(pipelineLoop)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := &keysParent{}
+	if err := m.Initialize(ctx, m); err != nil {
+		t.Fatalf("initialize: %s", err)
+	}
+	gate := make(chan struct{})
+	close(gate)
+	first := &gatedController{gate: gate}
+	if err := m.Register("c", first); err != nil {
+		t.Fatalf("register: %s", err)
+	}
+	waitGoroutines(t, pipelineLoop, pipelines+1)
+
+	second := &gatedController{gate: gate}
+	if err := m.Register("c", second); !errors.IsAlreadyExists(err) {
+		t.Fatalf("expected AlreadyExists, got %v", err)
+	}
+
+	m.NotifyCallback("k")
+	deadline := time.Now().Add(10 * time.Second)
+	for first.started.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the first controller never reconciled")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := second.started.Load(); got != 0 {
+		t.Fatalf("the refused controller reconciled %d times", got)
+	}
+	if got := goroutinesIn(pipelineLoop); got != pipelines+1 {
+		t.Fatalf("a pipeline was started: %d, expected %d", got, pipelines+1)
+	}
+
+	cancel()
+	waitGoroutines(t, pipelineLoop, pipelines)
+}
+
 // A requeue waiting for its delay ends when the pipeline stops, and never
 // enqueues afterwards.
 func Test_RequeueEndsWithPipeline(t *testing.T) {
+	loops := goroutinesIn(pipelineLoop)
 	before := goroutinesIn(requeueWait)
 	ctx, cancel := context.WithCancel(context.Background())
 	var calls atomic.Int64
@@ -276,6 +417,7 @@ func Test_RequeueEndsWithPipeline(t *testing.T) {
 	waitGoroutines(t, requeueWait, before+10)
 	cancel()
 	waitGoroutines(t, requeueWait, before)
+	waitGoroutines(t, pipelineLoop, loops)
 	if got := calls.Load(); got != 10 {
 		t.Fatalf("expected 10 reconciles, got %d", got)
 	}
