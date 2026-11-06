@@ -259,6 +259,17 @@ Unlock cache
 Notify Reconciler
 ```
 
+If the `DBFind()` fails with anything other than `NotFound`, the callback
+keeps the cached value rather than evicting it on a blip, records the key as
+pending, and notifies the reconciler as usual. A retrier goroutine per table,
+beside the change stream, reads each pending key again, backing off from 1 s
+to 30 s with jitter and never giving up, until a read succeeds. It applies the
+read as the callback does and notifies the reconciler again, so reconcilers
+run on the settled value; a newer event for the key always wins over an older
+retry. In read-through mode a key that is not cached is not recorded, since
+the next `Find` reads the database anyway. The retrier ends when the
+collection's client is closed.
+
 #### Reconciler Integration
 
 ```go
@@ -549,7 +560,8 @@ Optimizes concurrent cache access:
 - **Consistency guarantees:**
   - Writes always go to database first
   - Cache never has data that wasn't written
-  - Cache may be slightly stale (bounded staleness)
+  - Cache may be slightly stale; after a failed refresh read, stale until
+    a retried read of that row succeeds
 
 ## When to Use Which Implementation
 

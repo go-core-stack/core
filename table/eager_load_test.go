@@ -18,9 +18,11 @@ import (
 )
 
 // readHookCol runs beforeRead ahead of each FindOne and afterRead after
-// each one that succeeds, fails FindOne with err while err is set, and
-// fails FindMany with listErr while that is set; every other method is
-// the wrapped collection's.
+// each one that succeeds, fails FindOne with err while err is set, runs
+// the read through around while that is set, and fails FindMany with
+// listErr while that is set; every other method is the wrapped
+// collection's. It forwards Lifetime, so a table over it ends its
+// reconciler and retrier when the client is closed.
 type readHookCol struct {
 	db.StoreCollection
 	mu         sync.Mutex
@@ -28,6 +30,19 @@ type readHookCol struct {
 	listErr    error
 	beforeRead func(key any)
 	afterRead  func(key any)
+	// around performs a FindOne in place of the plain read: read is the
+	// plain read, and around may fail, hold or skip it
+	around func(ctx context.Context, key any, read func() error) error
+}
+
+func (c *readHookCol) Lifetime() context.Context {
+	return c.StoreCollection.(db.ClientLifetime).Lifetime()
+}
+
+func (c *readHookCol) setAround(fn func(ctx context.Context, key any, read func() error) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.around = fn
 }
 
 func (c *readHookCol) setListErr(err error) {
@@ -54,7 +69,7 @@ func (c *readHookCol) setErr(err error) {
 
 func (c *readHookCol) FindOne(ctx context.Context, key any, data any) error {
 	c.mu.Lock()
-	err, before, after := c.err, c.beforeRead, c.afterRead
+	err, before, after, around := c.err, c.beforeRead, c.afterRead, c.around
 	c.mu.Unlock()
 	if before != nil {
 		before(key)
@@ -62,7 +77,12 @@ func (c *readHookCol) FindOne(ctx context.Context, key any, data any) error {
 	if err != nil {
 		return err
 	}
-	if err := c.StoreCollection.FindOne(ctx, key, data); err != nil {
+	read := func() error { return c.StoreCollection.FindOne(ctx, key, data) }
+	if around != nil {
+		if err := around(ctx, key, read); err != nil {
+			return err
+		}
+	} else if err := read(); err != nil {
 		return err
 	}
 	if after != nil {
