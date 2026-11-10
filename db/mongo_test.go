@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -294,25 +295,27 @@ func Test_ClientConnection(t *testing.T) {
 	})
 }
 
+// The watchers run on the change streams' goroutines and the test reads the
+// counts from its own, so they are atomic.
 var (
-	mongoTestAddUpOps    int
-	mongoTestDeleteOps   int
-	myMongoTestDeleteOps int
+	mongoTestAddUpOps    atomic.Int64
+	mongoTestDeleteOps   atomic.Int64
+	myMongoTestDeleteOps atomic.Int64
 )
 
 func myKeyWatcher(op string, wKey interface{}) {
 	_ = wKey.(*MyKey)
 	switch op {
 	case MongoAddOp, MongoUpdateOp:
-		mongoTestAddUpOps += 1
+		mongoTestAddUpOps.Add(1)
 	case MongoDeleteOp:
-		mongoTestDeleteOps += 1
+		mongoTestDeleteOps.Add(1)
 	}
 }
 
 func myDeleteWatcher(op string, wKey interface{}) {
 	_ = wKey.(*MyKey)
-	myMongoTestDeleteOps += 1
+	myMongoTestDeleteOps.Add(1)
 }
 
 func Test_CollectionWatch(t *testing.T) {
@@ -355,20 +358,20 @@ func Test_CollectionWatch(t *testing.T) {
 		defer func() {
 			time.Sleep(2 * time.Second)
 			cancelfn()
-			if mongoTestAddUpOps != 3 {
-				t.Errorf("Add/Update Notify: Got %d, expected 3", mongoTestAddUpOps)
+			if n := mongoTestAddUpOps.Load(); n != 3 {
+				t.Errorf("Add/Update Notify: Got %d, expected 3", n)
 			}
-			if mongoTestDeleteOps != 2 {
-				t.Errorf("Delete Notify: Got %d, expected 2", mongoTestDeleteOps)
+			if n := mongoTestDeleteOps.Load(); n != 2 {
+				t.Errorf("Delete Notify: Got %d, expected 2", n)
 			}
-			if myMongoTestDeleteOps != 2 {
-				t.Errorf("expected delete count %d, but got %d", 2, myMongoTestDeleteOps)
+			if n := myMongoTestDeleteOps.Load(); n != 2 {
+				t.Errorf("expected delete count %d, but got %d", 2, n)
 			}
 		}()
 		// reset counters
-		mongoTestAddUpOps = 0
-		mongoTestDeleteOps = 0
-		myMongoTestDeleteOps = 0
+		mongoTestAddUpOps.Store(0)
+		mongoTestDeleteOps.Store(0)
+		myMongoTestDeleteOps.Store(0)
 		_ = col.Watch(watchCtx, nil, myKeyWatcher)
 		matchDeleteStage := mongo.Pipeline{bson.D{{Key: "$match", Value: bson.D{{Key: "operationType", Value: "delete"}}}}}
 		_ = col.Watch(watchCtx, matchDeleteStage, myDeleteWatcher)

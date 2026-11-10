@@ -6,6 +6,7 @@ package sync
 import (
 	"context"
 	"log"
+	gosync "sync"
 	"testing"
 	"time"
 
@@ -14,10 +15,20 @@ import (
 	"github.com/go-core-stack/core/reconciler"
 )
 
+// MyObserver records the providers it is told about. Reconcile runs on the
+// reconciler's goroutine and the test reads from its own, so mu guards
+// providers.
 type MyObserver struct {
 	reconciler.Controller
+	mu        gosync.Mutex
 	providers map[string]struct{}
 	tbl       *ProviderTable
+}
+
+func (o *MyObserver) count() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.providers)
 }
 
 func (o *MyObserver) Reconcile(k any) (*reconciler.Result, error) {
@@ -25,7 +36,10 @@ func (o *MyObserver) Reconcile(k any) (*reconciler.Result, error) {
 	if key == "" {
 		log.Panicln("Got invalid key response")
 	}
-	if o.tbl.IsProviderAvailable(key) {
+	available := o.tbl.IsProviderAvailable(key)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if available {
 		o.providers[key] = struct{}{}
 	} else {
 		delete(o.providers, key)
@@ -71,8 +85,8 @@ func Test_ObserverBaseTesting(t *testing.T) {
 		t.Errorf("failed to create Provider: %s", err)
 	}
 	time.Sleep(1 * time.Second)
-	if len(obs.providers) != 1 {
-		t.Errorf("Expected 1 provider but got %d", len(obs.providers))
+	if obs.count() != 1 {
+		t.Errorf("Expected 1 provider but got %d", obs.count())
 	}
 
 	providerDup, err := tbl.CreateProvider(context.Background(), "test-key")
@@ -80,8 +94,8 @@ func Test_ObserverBaseTesting(t *testing.T) {
 		t.Errorf("failed to create Provider: %s", err)
 	}
 	time.Sleep(1 * time.Second)
-	if len(obs.providers) != 1 {
-		t.Errorf("Expected 1 provider but got %d", len(obs.providers))
+	if obs.count() != 1 {
+		t.Errorf("Expected 1 provider but got %d", obs.count())
 	}
 
 	provider1, err := tbl.CreateProvider(context.Background(), "test-key-1")
@@ -89,15 +103,15 @@ func Test_ObserverBaseTesting(t *testing.T) {
 		t.Errorf("failed to create provider: %s", err)
 	}
 	time.Sleep(1 * time.Second)
-	if len(obs.providers) != 2 {
-		t.Errorf("Expected 2 provider but got %d", len(obs.providers))
+	if obs.count() != 2 {
+		t.Errorf("Expected 2 provider but got %d", obs.count())
 	}
 	_ = provider1.Close()
 	_ = providerDup.Close()
 	_ = provider.Close()
 
 	time.Sleep(2 * time.Second)
-	if len(obs.providers) != 0 {
-		t.Errorf("Expected 0 provider but got %d", len(obs.providers))
+	if obs.count() != 0 {
+		t.Errorf("Expected 0 provider but got %d", obs.count())
 	}
 }
