@@ -7,6 +7,7 @@ import (
 	"context"
 	"log"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -99,11 +100,27 @@ func tearDownMongoSetup() {
 	_, _ = table.col.DeleteMany(context.Background(), bson.D{})
 }
 
+// MyController counts its notifications and fails or requeues once when
+// told to. Reconcile runs on the pipeline's goroutine and the test sets and
+// reads from its own, so mu guards the fields.
 type MyController struct {
 	Controller
+	mu            sync.Mutex
 	reEnqueue     bool
 	retError      bool
 	notifications int
+}
+
+func (c *MyController) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.notifications
+}
+
+func (c *MyController) set(reEnqueue, retError bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reEnqueue, c.retError = reEnqueue, retError
 }
 
 func (c *MyController) Reconcile(k any) (*Result, error) {
@@ -111,6 +128,8 @@ func (c *MyController) Reconcile(k any) (*Result, error) {
 	if key.Name == "" {
 		log.Panicln("Got invalid key response")
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.notifications += 1
 	if c.retError {
 		c.retError = false
@@ -136,11 +155,11 @@ func Test_ReconcilerBaseValidations(t *testing.T) {
 	}
 
 	time.Sleep(1 * time.Second)
-	if crtl.notifications != 1 {
-		t.Errorf("Got %d notifications, expected only 1", crtl.notifications)
+	if crtl.count() != 1 {
+		t.Errorf("Got %d notifications, expected only 1", crtl.count())
 	}
 
-	crtl.reEnqueue = true
+	crtl.set(true, false)
 
 	key := &MyKey{
 		Name: "test-key-2",
@@ -155,11 +174,11 @@ func Test_ReconcilerBaseValidations(t *testing.T) {
 	}
 
 	time.Sleep(3 * time.Second)
-	if crtl.notifications != 3 {
-		t.Errorf("Got %d notifications, expected 3", crtl.notifications)
+	if crtl.count() != 3 {
+		t.Errorf("Got %d notifications, expected 3", crtl.count())
 	}
 
-	crtl.retError = true
+	crtl.set(false, true)
 	key = &MyKey{
 		Name: "test-key-3",
 	}
@@ -173,8 +192,8 @@ func Test_ReconcilerBaseValidations(t *testing.T) {
 	}
 
 	time.Sleep(1 * time.Second)
-	if crtl.notifications != 5 {
-		t.Errorf("Got %d notifications, expected 5", crtl.notifications)
+	if crtl.count() != 5 {
+		t.Errorf("Got %d notifications, expected 5", crtl.count())
 	}
 
 	tearDownMongoSetup()
