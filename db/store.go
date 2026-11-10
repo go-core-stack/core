@@ -163,4 +163,10 @@ type StoreClient interface {
 	// error if error is nil the health of the DB store can be
 	// considered healthy
 	HealthCheck(ctx context.Context) error
+
+	// Close releases the client: it ends the change streams started
+	// through it and disconnects within a bounded time. Calling it more
+	// than once is safe. It makes StoreClient an io.Closer, so a caller
+	// can release the client on shutdown without asserting its type.
+	Close() error
 }
