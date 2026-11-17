@@ -427,7 +427,8 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 	}
 
 	// start watching on the collection with the stream context
-	stream, err := c.col.Watch(streamCtx, filter)
+	opts := options.ChangeStream().SetMaxAwaitTime(c.parent.client.maxAwaitTime)
+	stream, err := c.col.Watch(streamCtx, filter, opts)
 	if err != nil {
 		release()
 		return c.parent.client.streamOpenError(err)
@@ -620,7 +621,7 @@ func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflec
 		}()
 	*/
 
-	opts := options.ChangeStream()
+	opts := options.ChangeStream().SetMaxAwaitTime(c.parent.client.maxAwaitTime)
 	opts.SetFullDocumentBeforeChange(options.WhenAvailable)
 	opts.SetFullDocument(options.WhenAvailable)
 
@@ -715,6 +716,11 @@ type mongoClient struct {
 	// disconnected, so the stream loops end as closed rather than
 	// failing on a disconnected client
 	stop context.CancelFunc
+
+	// maxAwaitTime is how long the server holds a change stream's read
+	// open while nothing has changed, for every stream started through
+	// this client
+	maxAwaitTime time.Duration
 }
 
 // streamEndExpected reports whether a change stream loop that has ended
@@ -755,12 +761,38 @@ func (c *mongoClient) streamOpenError(err error) error {
 	return err
 }
 
+// defaultMaxAwaitTime is how long the server holds an idle change stream's
+// read open before answering empty, unless MongoConfig sets otherwise. A
+// change is delivered as soon as it is made, whatever this is; it only sets
+// how often an idle stream asks again. Without it the server's own default
+// of 1 second applies, and every open stream polls the primary once a
+// second.
+const defaultMaxAwaitTime = 10 * time.Second
+
 type MongoConfig struct {
 	Host     string
 	Port     string
 	Uri      string
 	Username string
 	Password string
+
+	// MaxAwaitTime is how long the server holds a change stream's read open
+	// while nothing has changed, for every stream started through the
+	// client; zero or less means defaultMaxAwaitTime.
+	//
+	// An operation timeout on the client (timeoutMS in Uri) must be longer
+	// than this, or NewMongoClient returns InvalidArgument: the driver
+	// refuses to read a stream whose wait is not shorter than the timeout.
+	// A longer timeout still ends a stream that stays idle for longer
+	// than it. A stream whose context has a deadline ends, and panics as
+	// any unexpected end does, up to this long before the deadline rather
+	// than at it.
+	//
+	// A stream ended while the server holds its read keeps that
+	// connection out of the pool until the server answers, up to this
+	// long, so ending many streams at once can leave the client's other
+	// operations waiting for a connection.
+	MaxAwaitTime time.Duration
 }
 
 func (c *MongoConfig) validate() error {
@@ -797,6 +829,17 @@ func NewMongoClient(conf *MongoConfig) (StoreClient, error) {
 	}
 	clientOptions := options.Client()
 	clientOptions.ApplyURI(uri)
+
+	maxAwaitTime := conf.MaxAwaitTime
+	if maxAwaitTime <= 0 {
+		maxAwaitTime = defaultMaxAwaitTime
+	}
+	// the driver refuses to read a change stream whose wait is not shorter
+	// than the client's operation timeout, which would end every stream
+	// started through this client as soon as it is read
+	if t := clientOptions.Timeout; t != nil && *t > 0 && *t <= maxAwaitTime {
+		return nil, errors.Wrapf(errors.InvalidArgument, "operation timeout %s must be longer than the change stream max await time %s", *t, maxAwaitTime)
+	}
 	clientOptions.SetAuth(options.Credential{
 		AuthMechanism: "SCRAM-SHA-256",
 		AuthSource:    "admin", //getSourceIdentifier(),
@@ -822,9 +865,10 @@ func NewMongoClient(conf *MongoConfig) (StoreClient, error) {
 	// make the MongoStore struct hear and then call schema stuff here
 	done, stop := context.WithCancel(context.Background())
 	mClient := &mongoClient{
-		client: client,
-		done:   done,
-		stop:   stop,
+		client:       client,
+		done:         done,
+		stop:         stop,
+		maxAwaitTime: maxAwaitTime,
 	}
 	return mClient, nil
 }
