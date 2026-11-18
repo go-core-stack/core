@@ -31,7 +31,7 @@ const (
 	requeueWait  = "reconciler.(*Pipeline).initialize.func1("
 	enqueueCall  = "reconciler.(*Pipeline).Enqueue("
 	replayLoop   = "reconciler.(*ManagerImpl).Register.func1("
-	watchLoop    = "db.(*watchRegistration).run"
+	watchLoop    = "db.(*mongoCollection).Watch.func"
 )
 
 var reconcilerFrames = []string{pipelineLoop, requeueWait, enqueueCall, replayLoop, watchLoop}

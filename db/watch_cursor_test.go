@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // changeStreamCursors returns the change stream cursors the server holds
@@ -65,11 +64,7 @@ func clearCursors(t *testing.T, client StoreClient, dbName string) {
 	t.Helper()
 	db := client.(*mongoClient).client.Database(dbName)
 	for _, c := range changeStreamCursors(t, client, dbName) {
-		// a database's stream is named by its $cmd.aggregate namespace
-		coll, ok := c["coll"].(string)
-		if !ok {
-			coll = "$cmd.aggregate"
-		}
+		coll, _ := c["coll"].(string)
 		_ = db.RunCommand(context.Background(), bson.D{
 			{Key: "killCursors", Value: coll},
 			{Key: "cursors", Value: bson.A{c["_id"]}},
@@ -164,14 +159,7 @@ func Test_ResumedStreamLeavesNoCursor(t *testing.T) {
 	var once sync.Once
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// a stream of its own, whose loop the callback holds; a shared
-	// stream's loop goes on reading while a callback runs, so its read
-	// would be in progress when the cursor is killed
-	own := mongo.Pipeline{bson.D{{Key: "$project", Value: bson.D{
-		{Key: "operationType", Value: 1},
-		{Key: "documentKey", Value: 1},
-	}}}}
-	if err := col.Watch(ctx, own, func(string, any) {
+	if err := col.Watch(ctx, nil, func(string, any) {
 		once.Do(func() {
 			held <- struct{}{}
 			<-release
