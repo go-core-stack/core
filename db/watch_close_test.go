@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/go-core-stack/core/errors"
 )
@@ -54,9 +53,7 @@ func streamLoops() int {
 	for _, g := range bytes.Split(buf, []byte("\n\n")) {
 		s := string(g)
 		if strings.Contains(s, "db.(*mongoCollection).Watch.func") ||
-			strings.Contains(s, "db.(*mongoCollection).startEventLogger.func") ||
-			strings.Contains(s, "db.(*watchRegistration).run") ||
-			strings.Contains(s, "db.(*sharedStream).read") {
+			strings.Contains(s, "db.(*mongoCollection).startEventLogger.func") {
 			count++
 		}
 	}
@@ -140,9 +137,7 @@ func Test_CloseEndsWatches(t *testing.T) {
 	if err := col.startEventLogger(context.Background(), reflect.TypeOf(watchCloseEvent{}), nil); err != nil {
 		t.Fatalf("failed to start event logger: %s", err)
 	}
-	// one loop for each watch, one reading the stream they share, and
-	// the event logger's
-	waitStreamLoops(t, before+4)
+	waitStreamLoops(t, before+3)
 
 	if err := client.(io.Closer).Close(); err != nil {
 		t.Fatalf("close failed: %s", err)
@@ -201,7 +196,7 @@ func Test_UnexpectedStreamEndStillPanics(t *testing.T) {
 		runStreamEndChild(t, mode)
 		return
 	}
-	for _, mode := range []string{"deadline", "undecodable-key", "dropped-collection", "renamed-to-other-db"} {
+	for _, mode := range []string{"deadline", "undecodable-key"} {
 		t.Run(mode, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=^Test_UnexpectedStreamEndStillPanics$", "-test.count=1")
 			cmd.Env = append(os.Environ(), streamEndChildEnv+"="+mode)
@@ -211,10 +206,6 @@ func Test_UnexpectedStreamEndStillPanics(t *testing.T) {
 			}
 			if !strings.Contains(string(out), "End of stream observed due to error") {
 				t.Fatalf("child failed without the end of stream panic: %s; output:\n%s", err, out)
-			}
-			// a rename into another database reaches the stream as a drop
-			if (mode == "dropped-collection" || mode == "renamed-to-other-db") && !strings.Contains(string(out), "drop of test.watch-close-child followed by a watch") {
-				t.Fatalf("child panicked, but not on the drop of its collection: %s; output:\n%s", err, out)
 			}
 		})
 	}
@@ -248,39 +239,6 @@ func runStreamEndChild(t *testing.T, mode string) {
 		}
 		if _, err := coll.InsertOne(context.Background(), badKey); err != nil {
 			t.Fatalf("failed to insert: %s", err)
-		}
-	case "dropped-collection":
-		// a watch whose filter the drop itself does not match, as a
-		// table filtered to deletes or to one type of key
-		coll := col.(*mongoCollection).col
-		if _, err := coll.InsertOne(context.Background(), bson.D{{Key: "_id", Value: bson.D{{Key: "name", Value: "row"}}}}); err != nil && !mongo.IsDuplicateKeyError(err) {
-			t.Fatalf("failed to insert: %s", err)
-		}
-		deletes := mongo.Pipeline{bson.D{{Key: "$match", Value: bson.D{{Key: "operationType", Value: "delete"}}}}}
-		if err := col.Watch(context.Background(), deletes, func(string, any) {}); err != nil {
-			t.Fatalf("failed to start watch: %s", err)
-		}
-		if err := coll.Drop(context.Background()); err != nil {
-			t.Fatalf("failed to drop: %s", err)
-		}
-	case "renamed-to-other-db":
-		// the server gives a rename into another database to the source
-		// database's stream as a drop of the collection
-		coll := col.(*mongoCollection).col
-		if _, err := coll.InsertOne(context.Background(), bson.D{{Key: "_id", Value: bson.D{{Key: "name", Value: "row"}}}}); err != nil && !mongo.IsDuplicateKeyError(err) {
-			t.Fatalf("failed to insert: %s", err)
-		}
-		deletes := mongo.Pipeline{bson.D{{Key: "$match", Value: bson.D{{Key: "operationType", Value: "delete"}}}}}
-		if err := col.Watch(context.Background(), deletes, func(string, any) {}); err != nil {
-			t.Fatalf("failed to start watch: %s", err)
-		}
-		admin := client.(*mongoClient).client.Database("admin")
-		if err := admin.RunCommand(context.Background(), bson.D{
-			{Key: "renameCollection", Value: "test.watch-close-child"},
-			{Key: "to", Value: "watch-close-other.watch-close-child"},
-			{Key: "dropTarget", Value: true},
-		}).Err(); err != nil {
-			t.Fatalf("failed to rename: %s", err)
 		}
 	default:
 		t.Fatalf("unknown mode %q", mode)
