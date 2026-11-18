@@ -13,6 +13,8 @@ import (
 	"net"
 	"reflect"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -434,6 +436,10 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 		return c.parent.client.streamOpenError(err)
 	}
 
+	// tracked before the loop starts, so a client closed at once still
+	// finds the stream's cursor
+	tracked := c.parent.client.trackStream(c.parent.db, c.colName, stream)
+
 	// take a snapshot of keyType for processing watch, here rather than
 	// in the loop, so a later SetKeyType on this collection does not race
 	// the loop's read
@@ -451,6 +457,7 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 		defer func() {
 			// ignore the error returned by stream close as of now
 			_ = stream.Close(context.Background())
+			c.parent.client.endStream(tracked)
 		}()
 		defer func() {
 			if !streamEndExpected(ctx, c.parent.client.done) {
@@ -460,7 +467,7 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 				log.Panicf("End of stream observed due to error %s", stream.Err())
 			}
 		}()
-		for stream.Next(streamCtx) {
+		for tracked.next(streamCtx, stream) {
 			var data bson.M
 			if err := stream.Decode(&data); err != nil {
 				log.Printf("Closing watch due to decoding error %s", err)
@@ -643,6 +650,10 @@ func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflec
 		return c.parent.client.streamOpenError(err)
 	}
 
+	// tracked before the loop starts, so a client closed at once still
+	// finds the stream's cursor
+	tracked := c.parent.client.trackStream(c.parent.db, c.colName, stream)
+
 	// run the loop on stream in a separate go routine
 	// allowing the watch starter to resume control and work with
 	// managing Watch stream by virtue of passed context
@@ -655,6 +666,7 @@ func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflec
 		defer func() {
 			// ignore the error returned by stream close as of now
 			_ = stream.Close(context.Background())
+			c.parent.client.endStream(tracked)
 		}()
 		defer func() {
 			if !streamEndExpected(ctx, c.parent.client.done) {
@@ -664,7 +676,7 @@ func (c *mongoCollection) startEventLogger(ctx context.Context, eventType reflec
 				log.Panicf("End of stream observed due to error %s", stream.Err())
 			}
 		}()
-		for stream.Next(streamCtx) {
+		for tracked.next(streamCtx, stream) {
 			event := reflect.New(eventType)
 
 			if err := stream.Decode(event.Interface()); err != nil {
@@ -721,6 +733,11 @@ type mongoClient struct {
 	// open while nothing has changed, for every stream started through
 	// this client
 	maxAwaitTime time.Duration
+
+	// streamsMu guards streams, the change streams open through this
+	// client, so closing it can end their cursors on the server
+	streamsMu sync.Mutex
+	streams   map[*openStream]struct{}
 }
 
 // streamEndExpected reports whether a change stream loop that has ended
@@ -748,6 +765,117 @@ func (c *mongoClient) streamContext(ctx context.Context) (context.Context, func(
 		cancel()
 	}
 	return streamCtx, release, nil
+}
+
+// openStream is a change stream open through a client, and the cursor
+// that serves it on the server.
+//
+// A stream ended by cancelling its context while the server holds its
+// read is given up by the driver without telling the server. The server
+// does not time out an idle cursor that runs under a session, as a change
+// stream's does, unless enableTimeoutOfInactiveSessionCursors is set: it
+// keeps the cursor until that session expires, by default 30 minutes after
+// it was last used, which a client that keeps using that pooled session
+// postpones. So a watch that ends, and a client that closes, kill the
+// cursor themselves.
+//
+// The cursor is the one the stream's last read used. When the driver
+// resumes a stream, it moves to a new cursor, which is known as soon as
+// the resume returns; a stream ended during the resume leaves the new
+// cursor on the server. The kill is sent to the primary, selected again,
+// where every stream started through this package reads unless Uri sets
+// another read preference; it misses a cursor on another server, as when
+// the primary changed since the stream's last read, or when Uri lists
+// several mongos routers.
+type openStream struct {
+	db   *mongo.Database
+	coll string
+	// id is the cursor of the stream's last read
+	id atomic.Int64
+}
+
+// seen records the stream's cursor; it is called by the goroutine opening
+// the stream before its loop starts, and then only by the loop.
+func (s *openStream) seen(stream *mongo.ChangeStream) {
+	if id := stream.ID(); id != 0 {
+		s.id.Store(id)
+	}
+}
+
+// next waits for the stream's next change, as stream.Next does, but one
+// read at a time, recording the stream's cursor after each, so a cursor
+// the driver resumed onto is known before a change arrives on it.
+func (s *openStream) next(ctx context.Context, stream *mongo.ChangeStream) bool {
+	for {
+		if stream.TryNext(ctx) {
+			s.seen(stream)
+			return true
+		}
+		if stream.Err() != nil || stream.ID() == 0 {
+			return false
+		}
+		s.seen(stream)
+	}
+}
+
+// trackStream records a stream opened on coll in db. A stream whose open
+// returns while the client is being closed may be recorded after the
+// client has killed the others; its cursor is then left on the server.
+func (c *mongoClient) trackStream(db *mongo.Database, coll string, stream *mongo.ChangeStream) *openStream {
+	s := &openStream{db: db, coll: coll}
+	s.seen(stream)
+	c.streamsMu.Lock()
+	defer c.streamsMu.Unlock()
+	if c.streams == nil {
+		c.streams = map[*openStream]struct{}{}
+	}
+	c.streams[s] = struct{}{}
+	return s
+}
+
+// endStream kills the cursor of a stream that has ended, and then forgets
+// it, so a client closed while the kill is in progress still kills it.
+func (c *mongoClient) endStream(s *openStream) {
+	killCursor(context.Background(), s)
+	c.streamsMu.Lock()
+	delete(c.streams, s)
+	c.streamsMu.Unlock()
+}
+
+// killStreams kills the cursor of every stream still open, together and
+// within ctx, without waiting for their loops, which may be in a callback.
+func (c *mongoClient) killStreams(ctx context.Context) {
+	c.streamsMu.Lock()
+	var wg sync.WaitGroup
+	for s := range c.streams {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			killCursor(ctx, s)
+		}()
+	}
+	c.streamsMu.Unlock()
+	wg.Wait()
+}
+
+// killCursorTimeout bounds how long ending a stream waits for the server
+// to kill its cursor.
+const killCursorTimeout = 5 * time.Second
+
+// killCursor ends the stream's cursor on the server. Killing a cursor that
+// is already gone does nothing, and a failure is ignored: the server then
+// keeps the cursor, as before (see openStream).
+func killCursor(ctx context.Context, s *openStream) {
+	id := s.id.Load()
+	if id == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, killCursorTimeout)
+	defer cancel()
+	_ = s.db.RunCommand(ctx, bson.D{
+		{Key: "killCursors", Value: s.coll},
+		{Key: "cursors", Value: bson.A{id}},
+	}).Err()
 }
 
 // streamOpenError returns the error for a change stream that failed to
@@ -783,10 +911,10 @@ type MongoConfig struct {
 	// An operation timeout on the client (timeoutMS in Uri) must be longer
 	// than this, or NewMongoClient returns InvalidArgument: the driver
 	// refuses to read a stream whose wait is not shorter than the timeout.
-	// A longer timeout still ends a stream that stays idle for longer
-	// than it. A stream whose context has a deadline ends, and panics as
-	// any unexpected end does, up to this long before the deadline rather
-	// than at it.
+	// The timeout applies to each read, so it does not end a stream that
+	// stays idle for longer. A stream whose context has a deadline ends,
+	// and panics as any unexpected end does, up to this long before the
+	// deadline rather than at it.
 	//
 	// A stream ended while the server holds its read keeps that
 	// connection out of the pool until the server answers, up to this
@@ -916,19 +1044,21 @@ const defaultCloseTimeout = 15 * time.Second
 //
 // Before disconnecting, it cancels every change stream started through this
 // client (Watch and the event logger), so their loops end quietly instead
-// of failing on a disconnected client. It also ends the context returned
-// by Lifetime on its collections, under which a table's reconciler runs.
-// It does not wait for a callback in progress; that callback's calls on
-// this client then fail. A Watch started after Disconnect returns a
-// FailedPrecondition error.
+// of failing on a disconnected client, and kills their cursors on the
+// server, within ctx. It also ends the context returned by Lifetime on its
+// collections, under which a table's reconciler runs. It does not wait for
+// a callback in progress; that callback's calls on this client then fail.
+// A Watch started after Disconnect returns a FailedPrecondition error.
 //
 // Disconnect and Close may be called more than once. Only the first call
 // disconnects; later calls return nil, without waiting for a first call
 // still in progress.
 func (c *mongoClient) Disconnect(ctx context.Context) error {
 	// end the change streams first, so they observe a closed client
-	// rather than a failed read
+	// rather than a failed read, and end their cursors on the server
+	// while it can still be reached
 	c.stop()
+	c.killStreams(ctx)
 	err := c.client.Disconnect(ctx)
 	if errors.Is(err, mongo.ErrClientDisconnected) {
 		// already disconnected by an earlier call

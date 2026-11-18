@@ -209,9 +209,10 @@ The `Watch()` implementation:
 - Runs in a separate goroutine
 - Supports pipeline filters
 - Automatic cleanup on context cancellation
+- Kills its cursor on the server when it ends, by its context or by the client closing. The driver gives up a cursor whose read is cancelled without telling the server, and the server does not time out a change stream's cursor, which runs under a session, unless `enableTimeoutOfInactiveSessionCursors` is set: it keeps it until the session expires, by default 30 minutes after it was last used, which a client that keeps using that pooled session postpones. When the driver resumes a stream on a new cursor, that cursor is known as soon as the resume returns; a stream ended during the resume leaves it on the server. The kill is sent to the primary, so it misses a cursor on another server: after a change of primary, or behind several mongos routers.
 - Type-safe key extraction and marshaling
 - Panics on unexpected errors (not context cancellation)
-- Holds each read open for up to `MaxAwaitTime` (10 s by default) while nothing changes. A change is delivered as soon as it is made; the wait only sets how often an idle stream asks the primary again, which is once a second at the server's own default. A client operation timeout (`timeoutMS`) must be longer than `MaxAwaitTime`, or `NewMongoClient` returns `InvalidArgument`; even then, the driver ends a stream that stays idle for longer than the timeout.
+- Holds each read open for up to `MaxAwaitTime` (10 s by default) while nothing changes. A change is delivered as soon as it is made; the wait only sets how often an idle stream asks the primary again, which is once a second at the server's own default. A client operation timeout (`timeoutMS`) must be longer than `MaxAwaitTime`, or `NewMongoClient` returns `InvalidArgument`. The timeout applies to each read, so it does not end a stream that stays idle for longer.
 
 **Event Logging:**
 The `startEventLogger()` implementation:
@@ -219,6 +220,7 @@ The `startEventLogger()` implementation:
 - Supports resume tokens for crash recovery
 - Captures full documents with `updateLookup` option
 - Filters events by operation type
+- Kills its cursor on the server when it ends, as `Watch()` does
 
 ## Usage Examples
 
