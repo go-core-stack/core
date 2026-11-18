@@ -421,6 +421,12 @@ func (c *mongoCollection) Watch(ctx context.Context, filter any, cb WatchCallbac
 	default:
 		return errors.Wrapf(errors.InvalidArgument, "Invalid watch filter pipeline type specified, %v", v)
 	}
+	if matcher, ok := parseWatchFilter(filter.(mongo.Pipeline)); ok {
+		return c.watchShared(ctx, matcher, cb)
+	}
+	// a filter the shared stream cannot apply in the process keeps a
+	// stream of its own
+	//
 	// the stream runs under a context that also ends when the client
 	// is closed, so closing the client ends the watch
 	streamCtx, release, err := c.parent.client.streamContext(ctx)
@@ -738,6 +744,12 @@ type mongoClient struct {
 	// client, so closing it can end their cursors on the server
 	streamsMu sync.Mutex
 	streams   map[*openStream]struct{}
+
+	// watchMu guards shared, and the streams in it
+	watchMu sync.Mutex
+	// shared holds the change stream each database's watches share, by
+	// database name (see sharedStream)
+	shared map[string]*sharedStream
 }
 
 // streamEndExpected reports whether a change stream loop that has ended
@@ -912,14 +924,16 @@ type MongoConfig struct {
 	// than this, or NewMongoClient returns InvalidArgument: the driver
 	// refuses to read a stream whose wait is not shorter than the timeout.
 	// The timeout applies to each read, so it does not end a stream that
-	// stays idle for longer. A stream whose context has a deadline ends,
-	// and panics as any unexpected end does, up to this long before the
-	// deadline rather than at it.
+	// stays idle for longer. A watch whose context has a deadline ends,
+	// and panics as any unexpected end does, at the deadline when it
+	// shares its database's stream, once a callback running then has
+	// returned, and up to this long before it when it has a stream of
+	// its own.
 	//
-	// A stream ended while the server holds its read keeps that
-	// connection out of the pool until the server answers, up to this
-	// long, so ending many streams at once can leave the client's other
-	// operations waiting for a connection.
+	// An open stream holds a connection while the server holds its read,
+	// which is almost all the time. A stream that ends kills its cursor,
+	// which ends that read, so the connection goes back to the pool at
+	// once.
 	MaxAwaitTime time.Duration
 }
 

@@ -16,18 +16,27 @@ import (
 )
 
 // awaitedRead waits until the server holds a getMore open on the given
-// collection, and returns the maxTimeMS that read was sent with. The
-// server answers an awaited change stream read only when a change
-// arrives or that time passes, so it is the stream's await time.
+// collection, or on the database's shared stream when colName is empty,
+// and returns the maxTimeMS that read was sent with. The server answers an
+// awaited change stream read only when a change arrives or that time
+// passes, so it is the stream's await time.
 func awaitedRead(t *testing.T, client StoreClient, dbName, colName string) int64 {
 	t.Helper()
 	admin := client.(*mongoClient).client.Database("admin")
+	match := bson.D{
+		{Key: "ns", Value: dbName + "." + colName},
+		{Key: "command.getMore", Value: bson.D{{Key: "$exists", Value: true}}},
+	}
+	if colName == "" {
+		match = bson.D{
+			{Key: "ns", Value: dbName + ".$cmd"},
+			{Key: "command.collection", Value: "$cmd.aggregate"},
+			{Key: "command.getMore", Value: bson.D{{Key: "$exists", Value: true}}},
+		}
+	}
 	pipeline := bson.A{
 		bson.D{{Key: "$currentOp", Value: bson.D{{Key: "allUsers", Value: true}}}},
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "ns", Value: dbName + "." + colName},
-			{Key: "command.getMore", Value: bson.D{{Key: "$exists", Value: true}}},
-		}}},
+		bson.D{{Key: "$match", Value: match}},
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -78,15 +87,15 @@ func Test_WatchMaxAwaitTime(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = client.(io.Closer).Close() })
 
-			watched := "watch-await-" + tc.name
-			col := client.GetCollection("test", watched)
+			watchDB := "watch-await-" + tc.name
+			col := client.GetCollection(watchDB, "watched")
 			if err := col.SetKeyType(reflect.TypeOf(&MyKey{})); err != nil {
 				t.Fatalf("failed to set key type: %s", err)
 			}
 			if err := col.Watch(context.Background(), nil, func(string, any) {}); err != nil {
 				t.Fatalf("failed to start watch: %s", err)
 			}
-			if got := awaitedRead(t, client, "test", watched); got != tc.expect {
+			if got := awaitedRead(t, client, watchDB, ""); got != tc.expect {
 				t.Errorf("watch read waits %d ms, expected %d", got, tc.expect)
 			}
 
@@ -108,7 +117,7 @@ func Test_WatchDeliversDuringAwait(t *testing.T) {
 	client := newWatchTestClient(t)
 	t.Cleanup(func() { _ = client.(io.Closer).Close() })
 
-	col := client.GetCollection("test", "watch-await-deliver")
+	col := client.GetCollection("watch-await-deliver", "watched")
 	if err := col.SetKeyType(reflect.TypeOf(&MyKey{})); err != nil {
 		t.Fatalf("failed to set key type: %s", err)
 	}
@@ -123,7 +132,7 @@ func Test_WatchDeliversDuringAwait(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("failed to start watch: %s", err)
 	}
-	awaitedRead(t, client, "test", "watch-await-deliver")
+	awaitedRead(t, client, "watch-await-deliver", "")
 
 	start := time.Now()
 	if err := col.InsertOne(context.Background(), &MyKey{Name: "await"}, &MyData{Desc: "await"}); err != nil {
@@ -146,7 +155,7 @@ func Test_StreamEndsDuringAwait(t *testing.T) {
 
 	client := newWatchTestClient(t)
 	t.Cleanup(func() { _ = client.(io.Closer).Close() })
-	col := client.GetCollection("test", "watch-await-end")
+	col := client.GetCollection("watch-await-end", "watched")
 	if err := col.SetKeyType(reflect.TypeOf(&MyKey{})); err != nil {
 		t.Fatalf("failed to set key type: %s", err)
 	}
@@ -155,7 +164,7 @@ func Test_StreamEndsDuringAwait(t *testing.T) {
 	if err := col.Watch(ctx, nil, func(string, any) {}); err != nil {
 		t.Fatalf("failed to start watch: %s", err)
 	}
-	awaitedRead(t, client, "test", "watch-await-end")
+	awaitedRead(t, client, "watch-await-end", "")
 	start := time.Now()
 	cancel()
 	waitStreamLoops(t, before)
@@ -163,16 +172,16 @@ func Test_StreamEndsDuringAwait(t *testing.T) {
 		t.Errorf("cancelled watch ended after %s", elapsed)
 	}
 
-	// a collection of its own, so the read found is this stream's and not
+	// a database of its own, so the read found is this stream's and not
 	// the cancelled one's, which the server may still hold
-	closeCol := client.GetCollection("test", "watch-await-close")
+	closeCol := client.GetCollection("watch-await-close", "watched")
 	if err := closeCol.SetKeyType(reflect.TypeOf(&MyKey{})); err != nil {
 		t.Fatalf("failed to set key type: %s", err)
 	}
 	if err := closeCol.Watch(context.Background(), nil, func(string, any) {}); err != nil {
 		t.Fatalf("failed to start watch: %s", err)
 	}
-	awaitedRead(t, client, "test", "watch-await-close")
+	awaitedRead(t, client, "watch-await-close", "")
 	start = time.Now()
 	if err := client.(io.Closer).Close(); err != nil {
 		t.Fatalf("close failed: %s", err)

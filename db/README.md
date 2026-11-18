@@ -206,6 +206,11 @@ The `interpretMongoError()` function translates MongoDB errors to library-specif
 
 **Change Streams:**
 The `Watch()` implementation:
+- Shares one change stream per client and database between every eligible watch (see the next point) on that database's collections, so following one more collection, table or lock adds no stream. The stream is opened by the first watch on the database and closes with its last watch; it is never replaced, so starting or ending a watch does not pause the others, and while it is open a `Watch` per request costs a registration, not a stream. The process gives each change to every watch on its collection whose filter matches it, through a queue of that watch's own, so a slow callback delays only its own changes, which arrive in order. The queue has no bound: a callback that does not return keeps its watch's changes in memory until it does, and a queue reaching 10,000 changes is logged.
+- Shares a watch whose filter is nothing, or a single `$match` stage of field paths compared for equality (implicitly or with `$eq`) or with `$in` against strings and booleans. The filter is copied when `Watch` is called, so changing it afterwards changes nothing. Any other filter, including one comparing numbers (which the server compares by value across BSON types, Decimal128 included) or ObjectIDs, keeps a stream of its own, as does the event logger.
+- Sends every change in the database to the process, followed or not, since the server does not filter the shared stream; the filters are applied in the process.
+- Gives a shared watch every change made after `Watch` returns, and possibly earlier changes the stream had not yet given out when it started. So a collection dropped shortly before a watch on it starts can still end the process when the stream returns that drop. Dropping or renaming a followed collection, renaming another onto it, or dropping its database ends the process whatever the watches' filters.
+- Needs the `changeStream` and `find` privileges on the database, not only on each collection.
 - Runs in a separate goroutine
 - Supports pipeline filters
 - Automatic cleanup on context cancellation
@@ -278,8 +283,8 @@ callback := func(op string, key any) {
 // Start watching (runs in background)
 err := col.Watch(ctx, nil, callback)
 
-// With filter (only watch specific documents)
-filter := bson.M{"fullDocument.status": "active"}
+// With filter (only deletes)
+filter := mongo.Pipeline{{{Key: "$match", Value: bson.D{{Key: "operationType", Value: "delete"}}}}}
 err := col.Watch(ctx, filter, callback)
 ```
 
