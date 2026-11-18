@@ -15,8 +15,8 @@ import (
 	"github.com/go-core-stack/core/db"
 )
 
-// watchLoops counts the goroutines currently running a collection watch
-// loop, recognised by their function in the stack.
+// watchLoops counts the goroutines currently delivering a collection
+// watch's changes, recognised by their function in the stack.
 func watchLoops() int {
 	buf := make([]byte, 1<<20)
 	for {
@@ -29,7 +29,7 @@ func watchLoops() int {
 	}
 	count := 0
 	for _, g := range bytes.Split(buf, []byte("\n\n")) {
-		if strings.Contains(string(g), "db.(*mongoCollection).Watch.func") {
+		if strings.Contains(string(g), "db.(*watchRegistration).run") {
 			count++
 		}
 	}

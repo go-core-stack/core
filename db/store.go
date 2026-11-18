@@ -116,6 +116,18 @@ type StoreCollection interface {
 	// allow provisiong for a filter to be passed on, where the callback
 	// function to receive only conditional notifications of the events
 	// listener is interested about
+	//
+	// Every watch on the collections of one database whose filter is
+	// nothing or a single $match of equality and $in conditions on
+	// strings and booleans shares one change stream per client, opened
+	// by the first such watch and never replaced, so while it is open a
+	// Watch per request costs a registration, not a stream; another
+	// filter gets a stream of its own. The shared stream brings every
+	// change in the database into the process, where the filters are
+	// applied. A shared watch receives every change made after Watch
+	// returns, in order, and may also receive changes made shortly
+	// before it started. Dropping or renaming its collection, or
+	// dropping the database, ends the process.
 	Watch(ctx context.Context, filter any, cb WatchCallbackfn) error
 
 	// Aggregate runs a MongoDB aggregation pipeline against the collection
