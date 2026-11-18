@@ -180,11 +180,12 @@ Complete MongoDB implementation of all interfaces.
 **Connection Management:**
 ```go
 type MongoConfig struct {
-    Host     string  // MongoDB host (default: localhost)
-    Port     string  // MongoDB port (default: 27017)
-    Uri      string  // Full MongoDB URI (overrides Host/Port)
-    Username string  // Authentication username
-    Password string  // Authentication password
+    Host         string        // MongoDB host (default: localhost)
+    Port         string        // MongoDB port (default: 27017)
+    Uri          string        // Full MongoDB URI (overrides Host/Port)
+    Username     string        // Authentication username
+    Password     string        // Authentication password
+    MaxAwaitTime time.Duration // How long an idle change stream's read waits (default: 10s)
 }
 
 func NewMongoClient(config MongoConfig) (StoreClient, error)
@@ -210,6 +211,7 @@ The `Watch()` implementation:
 - Automatic cleanup on context cancellation
 - Type-safe key extraction and marshaling
 - Panics on unexpected errors (not context cancellation)
+- Holds each read open for up to `MaxAwaitTime` (10 s by default) while nothing changes. A change is delivered as soon as it is made; the wait only sets how often an idle stream asks the primary again, which is once a second at the server's own default. A client operation timeout (`timeoutMS`) must be longer than `MaxAwaitTime`, or `NewMongoClient` returns `InvalidArgument`; even then, the driver ends a stream that stays idle for longer than the timeout.
 
 **Event Logging:**
 The `startEventLogger()` implementation:
