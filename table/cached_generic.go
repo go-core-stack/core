@@ -42,7 +42,8 @@ type CachedTableConfig struct {
 	// stream (Watch). When set, only change events matching the pipeline are
 	// delivered to the cache callback.
 	// The pipeline is passed directly to StoreCollection.Watch and should be
-	// a mongo.Pipeline ([]bson.D) with $match stages or similar.
+	// a mongo.Pipeline ([]bson.D) with $match stages or similar. Filter on
+	// documentKey, not fullDocument (see WithWatchPipeline).
 	// Default: nil (all change events)
 	WatchPipeline any
 }
@@ -72,14 +73,15 @@ func WithReadThrough() CachedTableOption {
 // DBFindManyWithOpts (with or without Where) do not.
 //
 // The filter is passed directly to StoreCollection.FindMany and should be a
-// valid MongoDB filter document (e.g., bson.M{"key.type": "slack"}).
+// valid MongoDB filter document on the stored entries (e.g.,
+// bson.M{"_id.type": "slack"} for a table keyed by {type, name}).
 //
 // Example usage:
 //
 //	import "go.mongodb.org/mongo-driver/v2/bson"
 //
 //	err := table.InitializeWithConfig(col,
-//	    WithFilter(bson.M{"key.type": "slack"}))
+//	    WithFilter(bson.M{"_id.type": "slack"}))
 func WithFilter(filter any) CachedTableOption {
 	return func(cfg *CachedTableConfig) {
 		cfg.Filter = filter
@@ -98,34 +100,18 @@ func WithFilter(filter any) CachedTableOption {
 // The pipeline is passed directly to StoreCollection.Watch and should be a
 // mongo.Pipeline ([]bson.D) with appropriate $match stages.
 //
-// WARNING: MongoDB delete events omit the fullDocument field. If your pipeline
-// filters on fullDocument fields (e.g., fullDocument.key.type), delete events
-// will be silently dropped by the change stream and will NOT reach the cache
-// callback. The cache relies on the reconciler to eventually evict stale entries,
-// which means there will be a window of stale data until the next reconciliation
-// sweep. For immediate delete propagation, use one of these approaches:
+// Filter on documentKey, the changed document's _id, which every change
+// event carries. Watch asks for neither the document after an update nor
+// the one before a change, so update and delete events carry no
+// fullDocument: a pipeline matching on fullDocument fields drops every
+// update and delete. The cache is refreshed only from its change stream,
+// so it would keep serving the old entry until the process restarts. To
+// scope a table by a field, make that field part of the key.
 //
-//   - Use fullDocumentBeforeChange (requires MongoDB 6.0+ with pre-images enabled
-//     on the collection) to match deletes by the document's prior state
-//   - Include documentKey-based matching if the filter field is part of the _id
-//   - Accept the reconciler-based eviction delay for your use case
-//
-// Example with delete handling (MongoDB 6.0+ with pre-images):
+// Example, for a table keyed by {type, name}:
 //
 //	pipeline := mongo.Pipeline{
-//	    {{Key: "$match", Value: bson.M{"$or": bson.A{
-//	        bson.M{"operationType": bson.M{"$in": bson.A{"insert", "replace", "update"}},
-//	            "fullDocument.key.type": "slack"},
-//	        bson.M{"operationType": "delete",
-//	            "fullDocumentBeforeChange.key.type": "slack"},
-//	    }}}},
-//	}
-//	err := table.InitializeWithConfig(col, WithWatchPipeline(pipeline))
-//
-// Simple example (deletes handled via reconciler):
-//
-//	pipeline := mongo.Pipeline{
-//	    {{Key: "$match", Value: bson.M{"fullDocument.key.type": "slack"}}},
+//	    {{Key: "$match", Value: bson.M{"documentKey._id.type": "slack"}}},
 //	}
 //	err := table.InitializeWithConfig(col, WithWatchPipeline(pipeline))
 func WithWatchPipeline(pipeline any) CachedTableOption {
@@ -217,9 +203,9 @@ func (t *CachedTable[K, E]) Initialize(col db.StoreCollection) error {
 //	// stream. Using only one may cause cache drift — see each option's
 //	// documentation for details on partial configuration behavior.
 //	err := table.InitializeWithConfig(col,
-//	    WithFilter(bson.M{"key.type": "slack"}),
+//	    WithFilter(bson.M{"_id.type": "slack"}),
 //	    WithWatchPipeline(mongo.Pipeline{
-//	        {{Key: "$match", Value: bson.M{"fullDocument.key.type": "slack"}}},
+//	        {{Key: "$match", Value: bson.M{"documentKey._id.type": "slack"}}},
 //	    }))
 //
 // Returns an error if the table is already initialized, the entry or key type is a pointer,

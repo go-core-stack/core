@@ -244,27 +244,32 @@ if err != nil {
 // Get collection
 col := client.GetCollection("mydb", "users")
 
-// Set key type (required before operations)
-col.SetKeyType(reflect.TypeOf(""))
+// Set key type (required before operations); a key is a struct, stored as
+// the document's _id, which Watch needs to be a document
+type UserKey struct {
+    Name string `bson:"name"`
+}
+col.SetKeyType(reflect.TypeOf(&UserKey{}))
 
 // Insert document
 type User struct {
     Name  string
     Email string
 }
+key := &UserKey{Name: "alice"}
 user := User{Name: "Alice", Email: "alice@example.com"}
-err = col.InsertOne(ctx, "alice", user)
+err = col.InsertOne(ctx, key, user)
 
 // Find document
 var found User
-err = col.FindOne(ctx, "alice", &found)
+err = col.FindOne(ctx, key, &found)
 
 // Update document
 user.Email = "newemail@example.com"
-err = col.UpdateOne(ctx, "alice", user, false)
+err = col.UpdateOne(ctx, key, user, false)
 
 // Delete document
-err = col.DeleteOne(ctx, "alice")
+err = col.DeleteOne(ctx, key)
 ```
 
 ### Using Change Streams
@@ -275,12 +280,14 @@ callback := func(op string, key any) {
     log.Printf("Operation %s on key: %v", op, key)
 }
 
-// Start watching (runs in background)
-err := col.Watch(ctx, nil, callback)
+// Start watching every change (runs in background)
+err = col.Watch(ctx, nil, callback)
 
-// With filter (only watch specific documents)
-filter := bson.M{"fullDocument.status": "active"}
-err := col.Watch(ctx, filter, callback)
+// Or, instead, watch only deletes; filter on fields every change event
+// carries, such as operationType or documentKey: updates and deletes carry
+// no fullDocument
+filter := mongo.Pipeline{{{Key: "$match", Value: bson.D{{Key: "operationType", Value: "delete"}}}}}
+err = col.Watch(ctx, filter, callback)
 ```
 
 ### Event Logging
